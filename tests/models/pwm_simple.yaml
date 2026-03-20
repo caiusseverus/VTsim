@@ -1,0 +1,18 @@
+name: PWM Simple (SmartPI)
+description: Simple R1C1 model, SmartPI — harness smoke test
+model:
+  model_type: simple
+  control_mode: pwm
+  initial_temperature: 18
+  external_temperature_fixed: 5
+  heater_power_watts: 1500
+  heat_loss_coefficient: 30
+  thermal_mass: 4060638.9
+  thermal_inertia: 0
+simulation:
+  duration_hours: 72
+  step_seconds: 10
+  record_every_seconds: 30
+  initial_hvac_mode: heat
+  initial_preset_mode: eco
+  max_acceptable_steady_state_error_c: 1.5

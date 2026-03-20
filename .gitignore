@@ -1,0 +1,31 @@
+# Virtual environments
+.venv/
+.venv312/
+
+# Test cache
+.pytest_cache/
+__pycache__/
+*.pyc
+*.pyo
+
+# Simulation outputs (all generated — not tracked)
+results/
+
+# HA recorder exports (may contain personal data / large files)
+tests/validation/ha_exports/*.json
+
+# Keep the sample export used for testing
+!tests/validation/ha_exports/history_climate.sim_simple_pwm_20260317_1700_20260317_1709.json
+.worktrees/
+
+# Frontend build artifacts
+webapp/frontend/node_modules/
+webapp/frontend/dist/
+
+# Webapp run outputs
+webapp/runs/
+
+# Root-level debug sim outputs
+history_climate.*.json
+simulation_results.png
+offline_simulation_results.png

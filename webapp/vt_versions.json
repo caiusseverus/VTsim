@@ -1,0 +1,12 @@
+{
+  "vt_versions": [
+    {
+      "name": "test",
+      "path": "/home/keith/versatile_thermostat/custom_components/versatile_thermostat"
+    },
+    {
+      "name": "ffv3",
+      "path": "/home/keith/vtherm_test/versatile_thermostat/custom_components/versatile_thermostat"
+    }
+  ]
+}

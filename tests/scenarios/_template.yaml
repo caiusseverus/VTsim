@@ -1,0 +1,166 @@
+# VTsim scenario template — complete parameter reference.
+#
+# This file documents every available parameter with its default value.
+# Copy this file (without the leading underscore) to create a new scenario.
+# This file is intentionally NOT executed as a test scenario (leading _ convention).
+#
+# Parameters marked "# VERIFY" must be set to match your HA heating_simulator config.
+# Parameters marked "# ENTITY-ONLY" are not supported in VTsim (require live HA entity).
+
+name: "_template"
+description: "Complete parameter reference — copy and rename to create a scenario"
+
+# ---------------------------------------------------------------------------
+# Model (thermal physics)
+# ---------------------------------------------------------------------------
+model:
+  model_type: simple            # simple | r2c2 | radiator | r2c2_radiator
+  control_mode: pwm             # pwm (on/off switch) | linear (0–100% number)
+  initial_temperature: 18.0    # Starting room temperature (°C). Fed to VTherm via sensor pipeline.
+  external_temperature_fixed: 5.0  # Fixed outdoor temperature (°C). Used when ext_temp_profile disabled.
+  # external_temperature_entity: sensor.outdoor  # ENTITY-ONLY — not supported in VTsim
+
+  # --- Simple (R1C1) model parameters ---
+  # Used when model_type: simple
+  heater_power_watts: 2000.0   # W — nominal heater output at 100%
+  heat_loss_coefficient: 50.0  # W/°C — total heat loss rate per °C above outside (K-value)
+  thermal_mass: 350000.0        # J/°C — room thermal capacitance
+  thermal_inertia: 0.0          # s — first-order lag on heater output (0 = instant)
+
+  # --- R2C2 model parameters ---
+  # Used when model_type: r2c2
+  heater_power_watts_r2c2: 2000.0  # W — heat injected into air node
+  c_air: 50000.0                # J/°C — thermal mass of air + room contents
+  c_fabric: 3000000.0           # J/°C — thermal mass of building fabric (walls/floor/ceiling)
+  r_fabric: 0.01                # °C/W — thermal resistance air↔fabric (internal surface)
+  r_ext: 2.0                    # °C/W — thermal resistance fabric↔outside (through walls)
+  r_infiltration: 0.5           # °C/W — infiltration/ventilation path air↔outside
+  window_area_m2: 2.0           # m² — glazed area receiving direct solar
+  window_transmittance: 0.6     # SHGC / g-value (fraction of solar entering as heat)
+  solar_irradiance_fixed: 0.0   # W/m² — fixed solar irradiance (0 = solar gain disabled)
+  # solar_irradiance_entity: sensor.solar  # ENTITY-ONLY — not supported in VTsim
+
+  # --- Wet Radiator model parameters ---
+  # Used when model_type: radiator
+  flow_temperature: 70.0        # °C — boiler/heat pump supply temperature
+  # flow_temperature_entity: sensor.flow_temp  # ENTITY-ONLY — not supported in VTsim
+  c_radiator: 10000.0           # J/°C — radiator thermal mass (water + metal)
+  k_radiator: 10.0              # W/°C^n — BS EN 442 emission coefficient
+  radiator_exponent: 1.3        # BS EN 442 heat emission exponent n (1.3 for panel rads)
+  flow_rate_max_kg_s: 0.05      # kg/s — maximum water flow rate at full valve opening
+  heat_loss_coefficient_rad: 50.0  # W/°C — room K-value (same meaning as simple model)
+  c_room_rad: 350000.0          # J/°C — room thermal mass (same meaning as simple model)
+  pipe_delay_seconds: 0.0       # s — dead-time for hot water to reach radiator (0 = none)
+  valve_characteristic: linear  # linear | quick_opening (TRV crack-open curve)
+
+  # --- R2C2 + Radiator model parameters ---
+  # Used when model_type: r2c2_radiator
+  # Uses all R2C2 and Radiator parameters above EXCEPT:
+  #   heat_loss_coefficient_rad and c_room_rad (replaced by R2C2 fabric node)
+  #   heater_power_watts_r2c2 (radiator is the heater)
+  radiator_convective_fraction: 0.75  # fraction of radiator output to air node (remainder to fabric)
+
+# ---------------------------------------------------------------------------
+# Thermostat (VTherm configuration)
+# ---------------------------------------------------------------------------
+thermostat:
+  proportional_function: smart_pi  # smart_pi | tpi
+  cycle_min: 10                 # min — PWM cycle length
+  minimal_activation_delay: 20  # s — minimum ON time per cycle
+  minimal_deactivation_delay: 20 # s — minimum OFF time per cycle
+  eco_temp: 17.5                # °C — eco preset setpoint
+  comfort_temp: 20.0            # °C — comfort preset setpoint
+  min_temp: 7.0                 # °C — minimum allowed setpoint
+  max_temp: 24.0                # °C — maximum allowed setpoint
+
+  # TPI-specific parameters (ignored when proportional_function: smart_pi)
+  tpi_coef_int: 0.3             # TPI internal coefficient
+  tpi_coef_ext: 0.01            # TPI external coefficient
+
+# ---------------------------------------------------------------------------
+# Sensor imperfection pipeline
+# All stages default to 0 (disabled). Stages 5 and 6 are mutually exclusive.
+# ---------------------------------------------------------------------------
+sensor:
+  lag_tau: 0            # s — first-order thermal lag on sensor housing (0 = instant)
+                        #     Zigbee TRV in plastic: 10–30 s. Wall-mounted: 30–120 s.
+  bias: 0.0             # °C — fixed calibration offset (positive = reads high)
+                        #     Miscalibrated budget TRV: ±1–3 °C. Cold wall: −1.5 °C.
+  noise_std_dev: 0.0    # °C σ — Gaussian noise added per tick
+                        #     Ideal: 0. Zigbee TRV: 0.1–0.2. Budget TRV: 0.3–0.5.
+  quantisation: 0.0     # °C — minimum reportable temperature increment
+                        #     Continuous: 0. Zigbee TRV: 0.1. Budget TRV: 0.5.
+
+  # Stage 5 — Fixed rate limit (set to 0 when using Stage 6 Zigbee params)
+  update_rate_s: 0      # s — minimum interval between sensor reports (0 = every tick)
+                        #     Battery sensor (5 min): 300.
+
+  # Stage 6 — Zigbee-style conditional reporting (set all to 0 when using Stage 5)
+  # Mutually exclusive with update_rate_s above.
+  min_interval_s: 0     # s — minimum time between any two reports
+  max_interval_s: 0     # s — heartbeat: always report at least this often (0 = no heartbeat)
+  delta: 0.0            # °C — minimum post-quantisation change to trigger a report
+                        #     Typical Zigbee TRV: min=30, max=600, delta=0.1
+
+  # Preset examples (replace the values above with one of these profiles):
+  #   Ideal sensor (default):       lag=0,  bias=0,   noise=0,   quant=0,   rate=0
+  #   Budget TRV:                   lag=0,  bias=0,   noise=0.5, quant=0.5, rate=60
+  #   Zigbee TRV (typical):         lag=10, bias=0,   noise=0.1, quant=0.1, min=30, max=600, delta=0.1
+  #   Wall-mounted (cold wall):     lag=60, bias=-1.5, noise=0.1, quant=0.1
+  #   Miscalibrated sensor:         lag=0,  bias=2.0, noise=0.1
+
+# ---------------------------------------------------------------------------
+# Disturbances
+# ---------------------------------------------------------------------------
+disturbances:
+
+  # External temperature diurnal profile (F-11)
+  # When enabled, replaces external_temperature_fixed with a day/night cycle.
+  ext_temp_profile:
+    enabled: false
+    base: 5.0           # °C — mean daily temperature
+    amplitude: 3.0      # °C — half-swing from mean to peak/trough (daily range = 2×amplitude)
+                        #     UK winter: 2–4 °C. Summer: 5–8 °C.
+    min_hour: 5.5       # hour of daily minimum temperature (0–24), typically 05:00–06:00
+    max_hour: 14.5      # hour of daily maximum temperature (0–24), typically 14:00–15:00
+
+  # Occupancy and internal heat gain (F-05)
+  # Stochastic occupant count + cooking events generating heat gain.
+  occupancy:
+    enabled: false
+    max_occupants: 2              # maximum simultaneous occupants (90 W each)
+    cooking_power_w: 0.0          # W — peak internal gain during a cooking event (0 = disabled)
+    cooking_duration_s: 1200.0   # s — typical cooking event length (default 20 min)
+    cooking_events_per_day: 2.0  # mean cooking events per day (Poisson distribution)
+    seed: 42                     # random seed for reproducibility (change for different schedule)
+
+  # Wind and rain effects on heat loss (F-06, F-14)
+  # Disabled implicitly when coefficients are 0 — no enabled flag.
+  # K_eff = K_base × (1 + wind_coefficient × wind_speed_m_s) × (1 + rain_moisture_factor × rain_intensity)
+  weather:
+    wind_speed_m_s: 0.0          # m/s — current wind speed
+    wind_coefficient: 0.0        # per m/s — sensitivity of K to wind (0 = no wind effect)
+                                 #     Typical: 0.02–0.10. At 10 m/s and 0.05: 50% more heat loss.
+    rain_intensity: 0.0          # 0–1 — rain intensity fraction (0 = dry, 1 = heavy)
+    rain_moisture_factor: 0.0    # fractional increase in K at full rain intensity (0 = no rain effect)
+                                 #     Typical: 0.0–0.30.
+
+# ---------------------------------------------------------------------------
+# Simulation control
+# ---------------------------------------------------------------------------
+simulation:
+  duration_hours: 24            # total simulation duration
+  step_seconds: 10              # physics tick rate — match HA heating_simulator update_interval_seconds
+  record_every_seconds: 60      # snapshot interval for CSV/plot output
+  initial_hvac_mode: heat       # heat | cool | off
+  initial_preset_mode: comfort  # comfort | eco | boost | away | sleep
+
+  # Setpoint schedule — list of {at_hour, target_temp} entries.
+  # Applied in order; at_hour is elapsed hours since simulation start.
+  schedule:
+    - at_hour: 0
+      target_temp: 20.0
+    # - at_hour: 8
+    #   target_temp: 18.0
+    # - at_hour: 16
+    #   target_temp: 20.0

@@ -1,0 +1,19 @@
+name: PWM R2C2 (SmartPI)
+description: R2C2 two-capacitance room, SmartPI PWM
+model:
+  model_type: r2c2
+  control_mode: pwm
+  initial_temperature: 18
+  external_temperature_fixed: 5
+  heater_power_watts_r2c2: 1000
+  c_air: 1000000
+  c_fabric: 75000000
+  r_fabric: 0.008
+  r_ext: 0.0321
+  r_infiltration: 0.25
+simulation:
+  duration_hours: 72
+  step_seconds: 10
+  record_every_seconds: 60
+  initial_hvac_mode: heat
+  initial_preset_mode: eco
