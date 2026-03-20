@@ -7,7 +7,10 @@
         "proportional_function": "smart_pi",
         "cycle_min": 10,
         "minimal_activation_delay": 0,
-        "minimal_deactivation_delay": 0
+        "minimal_deactivation_delay": 0,
+        "smart_pi_use_setpoint_filter": true,
+        "smart_pi_use_ff3": true,
+        "smart_pi_aggregation_mode": "weighted_median"
       },
       "temperatures": {
         "eco_temp": 17.5,
@@ -19,48 +22,22 @@
       }
     },
     {
-      "id": "test2",
+      "id": "median",
       "name": "test (copy)",
       "control": {
         "proportional_function": "smart_pi",
-        "cycle_min": 20,
+        "cycle_min": 10,
         "minimal_activation_delay": 0,
-        "minimal_deactivation_delay": 0
+        "minimal_deactivation_delay": 0,
+        "smart_pi_use_setpoint_filter": true,
+        "smart_pi_use_ff3": false,
+        "smart_pi_aggregation_mode": "median"
       },
       "temperatures": {
         "eco_temp": 17.5,
         "comfort_temp": 20,
         "boost_temp": 25,
         "frost_temp": 10,
-        "min_temp": 7,
-        "max_temp": 35
-      }
-    },
-    {
-      "id": "ha-import-1773969578838",
-      "name": "HA import 20/03/2026, 01:19:38",
-      "control": {
-        "proportional_function": "smart_pi",
-        "cycle_min": 10
-      },
-      "temperatures": {
-        "comfort_temp": 20,
-        "safety_temp": 20
-      }
-    },
-    {
-      "id": "new",
-      "name": "new",
-      "control": {
-        "cycle_min": 15,
-        "minimal_activation_delay": 45,
-        "minimal_deactivation_delay": 45
-      },
-      "temperatures": {
-        "eco_temp": 17.5,
-        "comfort_temp": 20,
-        "frost_temp": 10,
-        "boost_temp": 25,
         "min_temp": 7,
         "max_temp": 35
       }

@@ -1,11 +1,11 @@
-name: PWM R2C2 Radiator (SmartPI)
+name: R2C2 Radiator (SmartPI)
 description: R2C2 room + wet radiator, SmartPI PWM
 model:
   model_type: r2c2_radiator
   control_mode: linear
   initial_temperature: 18
   external_temperature_fixed: 5
-  flow_temperature: 70
+  flow_temperature: 60
   c_radiator: 15000
   k_radiator: 12
   radiator_exponent: 1.3
