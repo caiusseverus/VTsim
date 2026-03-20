@@ -49,7 +49,10 @@ import sys as _sys
 from pathlib import Path as _Path
 
 # Allow importing disturbances directly from the heating_simulator source.
-_HS_ROOT = _Path(__file__).resolve().parents[2] / "custom_components" / "heating_simulator"
+# Resolution order matches models.py: VTSIM_HEATING_SIM_DIR env var first,
+# then the custom_components symlink fallback for CLI pytest.
+_hs_env = os.environ.get("VTSIM_HEATING_SIM_DIR")
+_HS_ROOT = _Path(_hs_env) if _hs_env else _Path(__file__).resolve().parents[2] / "custom_components" / "heating_simulator"
 if str(_HS_ROOT) not in _sys.path:
     _sys.path.insert(0, str(_HS_ROOT))
 

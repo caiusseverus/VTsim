@@ -8,7 +8,10 @@ from . import config as _cfg
 
 
 def _load() -> dict:
-    return json.loads(_cfg.HEATING_SIM_FILE.read_text())
+    try:
+        return json.loads(_cfg.HEATING_SIM_FILE.read_text())
+    except FileNotFoundError:
+        return {"path": ""}
 
 
 def _save(data: dict) -> None:

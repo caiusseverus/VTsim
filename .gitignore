@@ -27,6 +27,7 @@ webapp/frontend/dist/
 webapp/vt_versions.json
 webapp/presets.json
 webapp/schedules.json
+webapp/heating_sim.json
 webapp/runs/
 
 # Root-level debug sim outputs
