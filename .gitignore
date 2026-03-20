@@ -23,7 +23,10 @@ tests/validation/ha_exports/*.json
 webapp/frontend/node_modules/
 webapp/frontend/dist/
 
-# Webapp run outputs
+# Webapp user data (local to each install)
+webapp/vt_versions.json
+webapp/presets.json
+webapp/schedules.json
 webapp/runs/
 
 # Root-level debug sim outputs

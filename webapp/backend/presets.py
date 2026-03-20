@@ -10,7 +10,10 @@ _GROUPS = ("control", "temperatures")
 
 
 def _load() -> dict[str, Any]:
-    return json.loads(_cfg.PRESETS_FILE.read_text())
+    try:
+        return json.loads(_cfg.PRESETS_FILE.read_text())
+    except FileNotFoundError:
+        return {"presets": []}
 
 
 def _save(data: dict[str, Any]) -> None:

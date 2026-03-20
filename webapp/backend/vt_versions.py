@@ -8,7 +8,10 @@ from . import config as _cfg
 
 
 def _load() -> dict[str, Any]:
-    return json.loads(_cfg.VT_VERSIONS_FILE.read_text())
+    try:
+        return json.loads(_cfg.VT_VERSIONS_FILE.read_text())
+    except FileNotFoundError:
+        return {"vt_versions": []}
 
 
 def _save(data: dict[str, Any]) -> None:

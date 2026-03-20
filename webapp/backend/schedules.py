@@ -10,7 +10,10 @@ _ID_RE = re.compile(r'^[a-z0-9]([a-z0-9-]*[a-z0-9])?$')
 
 
 def _load() -> dict[str, Any]:
-    return json.loads(_cfg.SCHEDULES_FILE.read_text())
+    try:
+        return json.loads(_cfg.SCHEDULES_FILE.read_text())
+    except FileNotFoundError:
+        return {"schedules": []}
 
 
 def _save(data: dict[str, Any]) -> None:
