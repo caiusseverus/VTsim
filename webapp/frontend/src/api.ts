@@ -130,6 +130,17 @@ export const api = {
       body: JSON.stringify({name, path})}),
   removeVtVersion: (name: string) => fetchJson(`/vt-versions/${name}`, {method: 'DELETE'}),
 
+  // Heating Simulator path
+  getHeatingSim: () => fetchJson<{path: string}>('/heating-sim'),
+  setHeatingSim: (path: string) =>
+    fetchJson('/heating-sim', {method: 'PUT', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({path})}),
+
+  // Filesystem browser
+  browseFs: (path: string) =>
+    fetchJson<{path: string, dirs: string[], parent: string | null}>(
+      `/fs/browse?path=${encodeURIComponent(path)}`),
+
   // Presets
   listPresets: () => fetchJson<Preset[]>('/presets'),
   getPreset: (id: string) => fetchJson<Preset>(`/presets/${id}`),

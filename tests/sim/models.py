@@ -28,6 +28,7 @@ c_room_rad              → c_room                (radiator only)
 
 from __future__ import annotations
 
+import os
 from importlib.util import module_from_spec, spec_from_file_location
 from pathlib import Path
 from types import ModuleType
@@ -39,13 +40,23 @@ from typing import Any
 # ---------------------------------------------------------------------------
 
 def _load_thermal_model_module() -> ModuleType:
-    """Load heating_simulator/thermal_model.py from the symlinked integration."""
-    root = Path(__file__).resolve().parents[2]
-    model_path = root / "custom_components" / "heating_simulator" / "thermal_model.py"
+    """Load heating_simulator/thermal_model.py.
+
+    Path resolution order:
+    1. VTSIM_HEATING_SIM_DIR env var (set by webapp when launching a run)
+    2. custom_components/heating_simulator symlink (fallback for CLI pytest)
+    """
+    env_dir = os.environ.get("VTSIM_HEATING_SIM_DIR")
+    if env_dir:
+        model_path = Path(env_dir) / "thermal_model.py"
+    else:
+        root = Path(__file__).resolve().parents[2]
+        model_path = root / "custom_components" / "heating_simulator" / "thermal_model.py"
+
     if not model_path.exists():
         raise FileNotFoundError(
             f"Missing thermal model module: {model_path}\n"
-            "Ensure custom_components/heating_simulator is symlinked."
+            "Set VTSIM_HEATING_SIM_DIR or ensure custom_components/heating_simulator is symlinked."
         )
     spec = spec_from_file_location("_vtsim_thermal_model", model_path)
     if spec is None or spec.loader is None:

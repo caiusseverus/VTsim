@@ -216,11 +216,18 @@ async def _run_worker(
                                    schedule_entries=schedule_entries, model_slug=model_name,
                                    starting_conditions=starting_conditions)
 
+        from .heating_sim import get_dir as _get_heating_sim_dir
+        try:
+            heating_sim_dir = _get_heating_sim_dir()
+        except ValueError:
+            heating_sim_dir = ""
+
         env = {**os.environ,
                "VTSIM_VT_DIR": vt_dir,
                "VTSIM_SCENARIO_DIR": str(tmp_path),
                "VTSIM_OUTPUT_DIR": str(output_dir),
-               "VTSIM_LIVE_CSV": str(live_csv)}
+               "VTSIM_LIVE_CSV": str(live_csv),
+               **({"VTSIM_HEATING_SIM_DIR": heating_sim_dir} if heating_sim_dir else {})}
 
         proc = await asyncio.create_subprocess_exec(
             "uv", "run", "--", "pytest", "-q", "-s",

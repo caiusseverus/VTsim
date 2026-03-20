@@ -7,7 +7,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, HTTPException, BackgroundTasks, UploadFile, File
+from fastapi import FastAPI, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -16,11 +16,12 @@ from pydantic import BaseModel
 from .config import FRONTEND_DIST, RESULTS_DIR
 from . import models as md
 from . import vt_versions as vv
+from . import heating_sim as hs
+from . import fs_browser as fb
 from . import presets as pr
 from . import schedules as sc
 from . import importer as im
 from . import runs as rn
-from . import verify as ve
 
 app = FastAPI(title="VTsim Web API")
 
@@ -131,6 +132,40 @@ def remove_vt_version(name: str):
     except KeyError:
         raise HTTPException(404)
     return {"ok": True}
+
+
+# ---------------------------------------------------------------------------
+# Heating Simulator path
+# ---------------------------------------------------------------------------
+
+@app.get("/api/heating-sim")
+def get_heating_sim():
+    return {"path": hs.get_path()}
+
+
+class HeatingSimBody(BaseModel):
+    path: str
+
+
+@app.put("/api/heating-sim")
+def set_heating_sim(body: HeatingSimBody):
+    try:
+        hs.set_path(body.path)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    return {"ok": True}
+
+
+# ---------------------------------------------------------------------------
+# Filesystem browser
+# ---------------------------------------------------------------------------
+
+@app.get("/api/fs/browse")
+def fs_browse(path: str = ""):
+    try:
+        return fb.browse(path or None)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
 
 
 # ---------------------------------------------------------------------------
@@ -284,23 +319,6 @@ def import_ha_state(body: HAStateBody):
     return im.parse_ha_state(body.yaml_text)
 
 
-# ---------------------------------------------------------------------------
-# HA Log Verify
-# ---------------------------------------------------------------------------
-
-@app.post("/api/verify/parse")
-async def verify_parse(file: UploadFile = File(...)):
-    content = await file.read()
-    try:
-        records = json.loads(content)
-    except json.JSONDecodeError as e:
-        raise HTTPException(400, f"Invalid JSON: {e}")
-    if not isinstance(records, list):
-        raise HTTPException(400, "Expected a JSON array of state records")
-    try:
-        return ve.parse_ha_log(records)
-    except ValueError as e:
-        raise HTTPException(400, str(e))
 
 
 # ---------------------------------------------------------------------------
