@@ -458,8 +458,12 @@ async def test_vt_scenario(
         import homeassistant.helpers.event as ha_event
         monkeypatch.setattr(ha_event, "async_call_later", _async_call_later_sim)
 
-        import custom_components.versatile_thermostat.cycle_scheduler as vt_cycle
-        monkeypatch.setattr(vt_cycle, "async_call_later", _async_call_later_sim)
+        # cycle_scheduler was added in a later VT version — skip patching on older builds
+        try:
+            import custom_components.versatile_thermostat.cycle_scheduler as vt_cycle
+            monkeypatch.setattr(vt_cycle, "async_call_later", _async_call_later_sim)
+        except ModuleNotFoundError:
+            pass
 
         # Set up live CSV streaming for web backend.
         _live_csv_path_str = os.getenv("VTSIM_LIVE_CSV", "")
