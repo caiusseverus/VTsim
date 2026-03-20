@@ -114,6 +114,18 @@ def _capture_snapshot(
         "smartpi_governance_regime": smart_pi.get("governance_regime"),
         "smartpi_phase": smart_pi.get("phase"),
         "deadtime_heat_s": smart_pi.get("deadtime_heat_s"),
+        # Model direct physical quantities
+        **{
+            "model_effective_heater_power_w": getattr(model, "effective_heater_power", None),
+            "model_heating_rate_c_per_s":     getattr(model, "heating_rate", None),
+            "model_heat_loss_rate_c_per_s":   getattr(model, "heat_loss_rate", None),
+            "model_net_heat_rate_c_per_s":    getattr(model, "net_heat_rate", None),
+        },
+        # Model-type specific quantities (radiator_temperature, fabric_temperature, etc.)
+        **{
+            f"model_{k}": v
+            for k, v in (getattr(model, "extra_state", None) or {}).items()
+        },
     }
 
 

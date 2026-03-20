@@ -77,6 +77,18 @@ thermostat:
   tpi_coef_int: 0.3             # TPI internal coefficient
   tpi_coef_ext: 0.01            # TPI external coefficient
 
+  # SmartPI tuning parameters (ignored when proportional_function: tpi)
+  smart_pi_deadband: 0.05                         # °C — hysteresis band around setpoint
+  smart_pi_hysteresis_on: 0.30                    # °C — turn-on threshold above deadband
+  smart_pi_hysteresis_off: 0.50                   # °C — turn-off threshold below deadband
+  smart_pi_use_setpoint_filter: true              # smooth setpoint changes
+  smart_pi_aggregation_mode: weighted_median      # median | weighted_median
+  smart_pi_use_ff3: false                         # enable predictive feed-forward (FF3 / 1r1c twin)
+
+  # Auto-regulation parameters
+  auto_regulation_dtemp: 0.0                      # °C — regulation threshold (0 = disabled)
+  auto_regulation_periode_min: 0                  # min — regulation minimum period (0 = disabled)
+
 # ---------------------------------------------------------------------------
 # Sensor imperfection pipeline
 # All stages default to 0 (disabled). Stages 5 and 6 are mutually exclusive.
