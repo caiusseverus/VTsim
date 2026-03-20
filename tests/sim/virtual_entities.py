@@ -197,6 +197,8 @@ def read_number_power(
     state = hass.states.get(entity_id)
     if state is None:
         return 0.0
+    if max_value <= 0:
+        return 0.0
     try:
         return max(0.0, min(1.0, float(state.state) / max_value))
     except (ValueError, TypeError):

@@ -295,7 +295,7 @@ async def _setup_vt(hass: HomeAssistant, config_data: dict[str, Any]) -> MockCon
     )
     _trace(f"vt: async_setup returned ok={ok}")
     _trace("vt: async_block_till_done start")
-    await hass.async_block_till_done()
+    await asyncio.wait_for(hass.async_block_till_done(), timeout=60.0)
     _trace("vt: async_block_till_done done")
 
     current = hass.config_entries.async_get_entry(entry.entry_id)
@@ -558,7 +558,7 @@ async def test_vt_scenario(
 
     finally:
         await hass.config_entries.async_unload(entry.entry_id)
-        await hass.async_block_till_done()
+        await asyncio.wait_for(hass.async_block_till_done(), timeout=30.0)
         # Clear VT API singleton so the next test starts clean.
         VersatileThermostatAPI._hass = None
         if hass_gen is not None:

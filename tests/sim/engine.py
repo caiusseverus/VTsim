@@ -27,6 +27,7 @@ when async_fire_time_changed advances past their scheduled time.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import time as _time_module
@@ -297,7 +298,7 @@ async def run_simulation(
         )
 
     # VT may create long-lived background tasks; waiting for them can block forever.
-    await hass.async_block_till_done()
+    await asyncio.wait_for(hass.async_block_till_done(), timeout=60.0)
 
     # -----------------------------------------------------------------------
     # Simulation clock
@@ -307,7 +308,7 @@ async def run_simulation(
 
     # Fire an initial tick to let VT process startup state before the loop.
     async_fire_time_changed(hass, sim_start)
-    await hass.async_block_till_done()
+    await asyncio.wait_for(hass.async_block_till_done(), timeout=60.0)
 
     # -----------------------------------------------------------------------
     # Power reader (selected once, called each step)
@@ -351,7 +352,7 @@ async def run_simulation(
                 {"entity_id": climate_entity_id, "temperature": target_temp},
                 blocking=True,
             )
-            await hass.async_block_till_done()
+            await asyncio.wait_for(hass.async_block_till_done(), timeout=30.0)
             sched_idx += 1
 
         # Apply disturbances to model attributes BEFORE stepping the physics.
@@ -388,7 +389,7 @@ async def run_simulation(
         #   • state_changed event for the injected temperature above
         current_time = sim_start + timedelta(seconds=elapsed_s_end)
         async_fire_time_changed(hass, current_time)
-        await hass.async_block_till_done()
+        await asyncio.wait_for(hass.async_block_till_done(), timeout=30.0)
 
         # Read heater command for the NEXT physics step.
         prev_power = _read_power()
