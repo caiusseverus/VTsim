@@ -9,6 +9,8 @@ Simulations run at accelerated speed with a synthetic clock. Results are written
 - Python 3.12
 - [`uv`](https://docs.astral.sh/uv/getting-started/installation/)
 - Node.js + npm _(web UI only)_
+- [versatile_thermostat](https://github.com/jmcollin78/versatile_thermostat) — cloned separately
+- [heating_simulator](https://github.com/jmcollin78/heating_simulator) — cloned separately
 
 ## Installation
 
@@ -18,6 +20,24 @@ cd VTsim
 UV_CACHE_DIR=/tmp/uv-cache uv sync
 ```
 
+## Configuration
+
+VTsim needs the paths to the two dependency repos. The easiest way is via the web UI — start with `./run.sh` and set both paths on the Versions page.
+
+For CLI pytest, set environment variables instead:
+
+```bash
+export VTSIM_VT_DIR=/path/to/versatile_thermostat/custom_components/versatile_thermostat
+export VTSIM_HEATING_SIM_DIR=/path/to/heating_simulator/custom_components/heating_simulator
+```
+
+Or symlink them into the repo root:
+
+```bash
+ln -s /path/to/versatile_thermostat/custom_components/versatile_thermostat custom_components/versatile_thermostat
+ln -s /path/to/heating_simulator/custom_components/heating_simulator custom_components/heating_simulator
+```
+
 ## Running Simulations
 
 ```bash
@@ -25,7 +45,7 @@ UV_CACHE_DIR=/tmp/uv-cache uv sync
 UV_CACHE_DIR=/tmp/uv-cache uv run pytest -q tests/test_vt_scenarios.py -s
 
 # Single scenario
-UV_CACHE_DIR=/tmp/uv-cache uv run pytest -q "tests/test_vt_scenarios.py::test_vt_scenario[pwm_r2c2_standard]" -s
+UV_CACHE_DIR=/tmp/uv-cache uv run pytest -q "tests/test_vt_scenarios.py::test_vt_scenario[pwm_r2c2]" -s
 ```
 
 Results are written to `results/<scenario_name>.png` and `results/summary.csv`.
