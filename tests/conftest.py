@@ -16,6 +16,16 @@ _root_str = str(_root)
 if _root_str not in sys.path:
     sys.path.insert(0, _root_str)
 
+# If VTSIM_VT_DIR is set, add its grandparent to sys.path so that
+# `import custom_components.versatile_thermostat` resolves at module load time,
+# before any fixtures run. Without this, the top-level import in test_vt_scenarios.py
+# fails when there is no custom_components/ symlink in the project root.
+_vt_dir_env = os.environ.get("VTSIM_VT_DIR", "")
+if _vt_dir_env:
+    _vt_parent = str(Path(_vt_dir_env).resolve().parents[1])
+    if _vt_parent not in sys.path:
+        sys.path.insert(0, _vt_parent)
+
 
 class _PipeSelfWakeSelectorLoop(asyncio.SelectorEventLoop):
     """Selector loop that wakes via os.pipe() instead of socketpair().
