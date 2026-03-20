@@ -30,6 +30,13 @@ webapp/schedules.json
 webapp/heating_sim.json
 webapp/runs/
 
+# Planning and AI assistant documents
+CLAUDE.md
+PLAN.md
+ANALYSIS.md
+*.plan.md
+*.analysis.md
+
 # Root-level debug sim outputs
 history_climate.*.json
 simulation_results.png
