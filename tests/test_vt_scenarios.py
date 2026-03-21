@@ -405,10 +405,15 @@ async def test_vt_scenario(
         when = clock.utcnow() + _timedelta(seconds=delay)
         return _atp(hass_obj, action, when)
 
-    monkeypatch.setattr(
-        "custom_components.versatile_thermostat.cycle_scheduler.async_call_later",
-        _sim_async_call_later,
-    )
+    # cycle_scheduler was added in a later VT version — skip patching on older builds
+    try:
+        import custom_components.versatile_thermostat.cycle_scheduler  # noqa: F401
+        monkeypatch.setattr(
+            "custom_components.versatile_thermostat.cycle_scheduler.async_call_later",
+            _sim_async_call_later,
+        )
+    except ModuleNotFoundError:
+        pass
 
     # ------------------------------------------------------------------
     # 5c. Limit VT platform forwarding to what the simulation actually needs.
