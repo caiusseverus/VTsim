@@ -149,7 +149,7 @@ export default function PresetForm({ preset, onSave, onCancel }: Props) {
     }))
   }
 
-  const idValid = SLUG_RE.test(f.id)
+  const idValid = isCreate ? SLUG_RE.test(f.id) : true
   const canSave = f.name.trim() !== '' && idValid && !saving
 
   const handleSave = async () => {

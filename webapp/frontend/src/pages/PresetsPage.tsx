@@ -119,11 +119,13 @@ export default function PresetsPage() {
                         className="text-slate-400 hover:text-slate-100 text-sm transition-colors">Edit</button>
                       <button
                         onClick={async () => {
-                          const newId = window.prompt(`Clone "${p.id}" — enter new ID:`)
-                          if (!newId?.trim()) return
+                          const rawId = window.prompt(`Clone "${p.id}" — enter new ID:`)
+                          if (!rawId?.trim()) return
+                          const newId = rawId.trim().toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '').slice(0, 60)
+                          if (!newId) { setError('Invalid ID — use lowercase letters, numbers and hyphens'); return }
                           const newName = window.prompt('Name for the clone:', `${p.name} (copy)`) ?? `${p.name} (copy)`
                           try {
-                            await api.clonePreset(p.id, newId.trim(), newName.trim() || newId.trim())
+                            await api.clonePreset(p.id, newId, newName.trim() || newId)
                             load()
                           } catch (e) { setError(String(e)) }
                         }}
