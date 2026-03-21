@@ -114,6 +114,14 @@ export default function RunsPage() {
     load()
   }
 
+  const handleDeleteSelected = async () => {
+    if (checkedIds.size === 0) return
+    if (!confirm(`Delete ${checkedIds.size} run(s) and their results?`)) return
+    await Promise.all([...checkedIds].map(id => api.deleteRun(id)))
+    setCheckedIds(new Set())
+    load()
+  }
+
   const handleCompare = () => navigate(`/compare?runs=${[...checkedIds].join(',')}`)
 
   const toggleMetric = (col: string) =>
@@ -179,6 +187,13 @@ export default function RunsPage() {
       <div className="flex items-center justify-between mb-6">
         <h1 className="text-slate-100 text-xl font-semibold">Simulation Runs</h1>
         <div className="flex gap-3">
+          <button
+            disabled={checkedIds.size === 0}
+            onClick={handleDeleteSelected}
+            className="bg-slate-700 hover:bg-red-700 text-slate-200 font-medium rounded-md px-4 py-1.5 text-sm disabled:opacity-40 disabled:cursor-not-allowed"
+          >
+            Delete selected ({checkedIds.size})
+          </button>
           <button
             disabled={checkedIds.size < 2}
             onClick={handleCompare}

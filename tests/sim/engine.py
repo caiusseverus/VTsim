@@ -116,7 +116,17 @@ def _capture_snapshot(
         "smartpi_learn_last_reason": smart_pi.get("learn_last_reason"),
         "smartpi_governance_regime": smart_pi.get("governance_regime"),
         "smartpi_phase": smart_pi.get("phase"),
+        "smartpi_regulation_mode": smart_pi.get("regulation_mode"),
+        "smartpi_sat": smart_pi.get("sat"),
+        "smartpi_error": smart_pi.get("error"),
+        "smartpi_u_ff": smart_pi.get("u_ff"),
+        "smartpi_u_pi": smart_pi.get("u_pi"),
+        "smartpi_u_cmd": smart_pi.get("u_cmd"),
+        "smartpi_learn_progress_percent": smart_pi.get("learn_progress_percent"),
+        "smartpi_near_band_below_deg": smart_pi.get("near_band_below_deg"),
+        "smartpi_near_band_above_deg": smart_pi.get("near_band_above_deg"),
         "deadtime_heat_s": smart_pi.get("deadtime_heat_s"),
+        "deadtime_cool_s": smart_pi.get("deadtime_cool_s"),
         # Model direct physical quantities
         **{
             "model_effective_heater_power_w": getattr(model, "effective_heater_power", None),

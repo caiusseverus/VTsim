@@ -50,6 +50,18 @@ const CHART_SPECS = [
     yLabel: 'Learn count B',
     metrics: ['smartpi_learn_ok_count_b'],
   },
+  {
+    key: 'u_ff',
+    title: 'Feed-forward (u_ff)',
+    yLabel: 'u_ff',
+    metrics: ['smartpi_u_ff'],
+  },
+  {
+    key: 'u_pi',
+    title: 'PI output (u_pi)',
+    yLabel: 'u_pi',
+    metrics: ['smartpi_u_pi'],
+  },
 ] as const
 
 type LivePoint = Record<string, number>

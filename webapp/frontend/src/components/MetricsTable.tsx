@@ -3,8 +3,10 @@ import type { RunCell } from '../api'
 const METRIC_KEYS = [
   'steady_state_error_c', 'energy_kwh', 'switch_cycles',
   'max_overshoot_c', 'settling_time_h',
-  'smartpi_a_final', 'smartpi_b_final', 'deadtime_heat_s',
+  'smartpi_a_final', 'smartpi_b_final', 'deadtime_heat_s', 'deadtime_cool_s',
 ]
+
+const HIGH_PRECISION_KEYS = new Set(['smartpi_a_final', 'smartpi_b_final'])
 
 function cellColor(key: string, value: number | null): string {
   if (value === null) return 'text-slate-300'
@@ -74,7 +76,7 @@ export default function MetricsTable({ cells, onSelectCell, selectedCell }: Prop
                           return (
                             <div key={k} className="flex justify-between gap-2">
                               <span className="text-slate-500">{k.replace(/_/g,' ')}</span>
-                              <span className={`font-mono ${cellColor(k, v)}`}>{typeof v === 'number' ? v.toFixed(4) : v}</span>
+                              <span className={`font-mono ${cellColor(k, v)}`}>{typeof v === 'number' ? v.toFixed(HIGH_PRECISION_KEYS.has(k) ? 6 : 4) : v}</span>
                             </div>
                           )
                         })}

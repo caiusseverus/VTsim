@@ -12,6 +12,41 @@ const TRACE_COLORS = [
   '#f472b6', '#facc15', '#e879f9', '#60a5fa',
 ]
 
+const COL_LABELS: Record<string, string> = {
+  model_temperature:              'Model room temp (°C)',
+  sensor_temperature:             'Sensor feed to VT (°C)',
+  current_temperature:            'VT current temp (°C)',
+  target_temperature:             'Setpoint (°C)',
+  power_percent:                  'Power (%)',
+  on_percent:                     'On percent (%)',
+  switch_state:                   'Switch state',
+  smartpi_a:                      'SmartPI a',
+  smartpi_b:                      'SmartPI b',
+  smartpi_u_ff:                   'u_ff (feed-forward)',
+  smartpi_u_pi:                   'u_pi (PI output)',
+  smartpi_u_cmd:                  'u_cmd',
+  smartpi_error:                  'Control error',
+  deadtime_heat_s:                'Deadtime heat (s)',
+  deadtime_cool_s:                'Deadtime cool (s)',
+  smartpi_learn_ok_count_a:       'Learn count A',
+  smartpi_learn_ok_count_b:       'Learn count B',
+  smartpi_learn_progress_percent: 'Learn progress (%)',
+  model_effective_heater_power_w: 'Heater power (W)',
+  model_heating_rate_c_per_s:     'Heating rate (°C/s)',
+  model_heat_loss_rate_c_per_s:   'Heat loss rate (°C/s)',
+  model_net_heat_rate_c_per_s:    'Net heat rate (°C/s)',
+}
+
+const COLUMN_GROUPS: { label: string; cols: string[] }[] = [
+  { label: 'Temperature',   cols: ['model_temperature', 'sensor_temperature', 'current_temperature', 'target_temperature'] },
+  { label: 'Power / Duty',  cols: ['power_percent', 'on_percent', 'switch_state', 'model_effective_heater_power_w'] },
+  { label: 'SmartPI A / B', cols: ['smartpi_a', 'smartpi_b'] },
+  { label: 'Control',       cols: ['smartpi_u_ff', 'smartpi_u_pi', 'smartpi_u_cmd', 'smartpi_error'] },
+  { label: 'Deadtime',      cols: ['deadtime_heat_s', 'deadtime_cool_s'] },
+  { label: 'Learning',      cols: ['smartpi_learn_ok_count_a', 'smartpi_learn_ok_count_b', 'smartpi_learn_progress_percent'] },
+  { label: 'Model physics', cols: ['model_heating_rate_c_per_s', 'model_heat_loss_rate_c_per_s', 'model_net_heat_rate_c_per_s'] },
+]
+
 function sseClass(val: number | null | undefined): string {
   if (val == null) return ''
   if (val < 0.2) return 'text-emerald-400'
@@ -147,7 +182,7 @@ export default function ComparisonPage() {
       ...AXIS_BASE,
       ...(mi === N - 1 ? { title: { text: 'Elapsed (h)' } } : {}),
     }
-    layoutAxes[yKey] = { ...AXIS_BASE, title: { text: metric } }
+    layoutAxes[yKey] = { ...AXIS_BASE, title: { text: COL_LABELS[metric] ?? metric } }
   })
 
   const allMetricKeys = [...new Set(
@@ -276,20 +311,39 @@ export default function ComparisonPage() {
       {activeCells.length > 0 && (
         <div className="bg-slate-900 border border-slate-800 rounded-lg p-4">
 
-          {/* Metric checkboxes */}
+          {/* Grouped metric checkboxes */}
           {csvCols.length > 0 && (
-            <div className="flex flex-wrap gap-x-4 gap-y-1.5 mb-4">
-              {csvCols.map(col => (
-                <label key={col} className="flex items-center gap-1.5 cursor-pointer">
-                  <input
-                    type="checkbox"
-                    className="accent-sky-500 w-4 h-4"
-                    checked={selectedMetrics.has(col)}
-                    onChange={() => toggleMetric(col)}
-                  />
-                  <span className="text-xs text-slate-300 font-mono">{col}</span>
-                </label>
-              ))}
+            <div className="flex flex-wrap gap-x-6 gap-y-2 mb-4">
+              {(() => {
+                const availableSet = new Set(csvCols)
+                const knownCols = new Set(COLUMN_GROUPS.flatMap(g => g.cols))
+                const otherCols = csvCols.filter(c => !knownCols.has(c))
+                const visibleGroups = [
+                  ...COLUMN_GROUPS.map(g => ({ ...g, cols: g.cols.filter(c => availableSet.has(c)) }))
+                    .filter(g => g.cols.length > 0),
+                  ...(otherCols.length > 0 ? [{ label: 'Other', cols: otherCols }] : []),
+                ]
+                return visibleGroups.map(group => (
+                  <div key={group.label} className="min-w-0">
+                    <div className="text-xs font-semibold uppercase tracking-wider text-slate-500 mb-1">
+                      {group.label}
+                    </div>
+                    <div className="flex flex-col gap-0.5">
+                      {group.cols.map(col => (
+                        <label key={col} className="flex items-center gap-1.5 cursor-pointer hover:text-slate-100">
+                          <input
+                            type="checkbox"
+                            className="accent-sky-500 w-3.5 h-3.5"
+                            checked={selectedMetrics.has(col)}
+                            onChange={() => toggleMetric(col)}
+                          />
+                          <span className="text-xs text-slate-300">{COL_LABELS[col] ?? col}</span>
+                        </label>
+                      ))}
+                    </div>
+                  </div>
+                ))
+              })()}
             </div>
           )}
 

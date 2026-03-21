@@ -79,23 +79,27 @@ def compute_metrics(records: list[dict[str, Any]], scenario: dict[str, Any]) -> 
     # Error vs setpoint.
     df["error_c"] = df["model_temperature"] - df["target_temperature"]
 
-    # ── Steady-state error (last 25%) ────────────────────────────────────────
-    cutoff = df["elapsed_s"].max() * 0.75
-    tail = df[df["elapsed_s"] >= cutoff]
-    steady_state_error_c = float(tail["error_c"].abs().mean()) if not tail.empty else float("nan")
+    # ── Steady-state error ───────────────────────────────────────────────────
+    # Start from settling_time if found (avoids hysteresis-mode startup
+    # disruption); fall back to last 33% of the run.
+    window_steps = max(1, int(30 * 60 / dt_s))
+    in_band_pre = (df["error_c"].abs() <= deadband).to_numpy()
+    settle_s: float | None = None
+    for i in range(len(in_band_pre) - window_steps + 1):
+        if in_band_pre[i : i + window_steps].all():
+            settle_s = float(df["elapsed_s"].iloc[i])
+            break
+    if settle_s is not None:
+        sse_tail = df[df["elapsed_s"] >= settle_s]
+    else:
+        sse_tail = df[df["elapsed_s"] >= df["elapsed_s"].max() * 0.67]
+    steady_state_error_c = float(sse_tail["error_c"].abs().mean()) if not sse_tail.empty else float("nan")
 
     # ── Max overshoot ────────────────────────────────────────────────────────
     max_overshoot_c = float(df["error_c"].max())
 
     # ── Settling time ────────────────────────────────────────────────────────
-    # Window of 30 minutes; step resolution is dt_s seconds.
-    window_steps = max(1, int(30 * 60 / dt_s))
-    in_band = (df["error_c"].abs() <= deadband).to_numpy()
-    settling_time_h: float | None = None
-    for i in range(len(in_band) - window_steps + 1):
-        if in_band[i : i + window_steps].all():
-            settling_time_h = float(df["elapsed_s"].iloc[i]) / 3600.0
-            break
+    settling_time_h: float | None = (settle_s / 3600.0) if settle_s is not None else None
 
     # ── Energy ───────────────────────────────────────────────────────────────
     # power_percent is 0–100; divide by 100 to get fraction.
@@ -114,6 +118,7 @@ def compute_metrics(records: list[dict[str, Any]], scenario: dict[str, Any]) -> 
     smartpi_a_final = _to_float(last.get("smartpi_a"))
     smartpi_b_final = _to_float(last.get("smartpi_b"))
     deadtime_heat_s = _to_float(last.get("deadtime_heat_s"))
+    deadtime_cool_s = _to_float(last.get("deadtime_cool_s"))
 
     return {
         "scenario_name": model_name,
@@ -125,6 +130,7 @@ def compute_metrics(records: list[dict[str, Any]], scenario: dict[str, Any]) -> 
         "smartpi_a_final": smartpi_a_final,
         "smartpi_b_final": smartpi_b_final,
         "deadtime_heat_s": deadtime_heat_s,
+        "deadtime_cool_s": deadtime_cool_s,
     }
 
 
@@ -139,6 +145,7 @@ def _empty_metrics(scenario: dict[str, Any]) -> dict[str, Any]:
         "smartpi_a_final": None,
         "smartpi_b_final": None,
         "deadtime_heat_s": None,
+        "deadtime_cool_s": None,
     }
 
 
@@ -179,18 +186,25 @@ def save_plot(
     df["target_temperature"] = pd.to_numeric(df["target_temperature"], errors="coerce")
     df["power_percent"] = pd.to_numeric(df.get("power_percent"), errors="coerce")
     df["on_percent"] = pd.to_numeric(df.get("on_percent"), errors="coerce")
-    df["switch_state"] = pd.to_numeric(df.get("switch_state"), errors="coerce")
+    df["smartpi_u_ff"] = pd.to_numeric(df.get("smartpi_u_ff"), errors="coerce")
+    df["smartpi_u_pi"] = pd.to_numeric(df.get("smartpi_u_pi"), errors="coerce")
 
-    # Use power_percent if present, otherwise on_percent * 100.
+    # Use power_percent if present, otherwise on_percent.
     if df["power_percent"].notna().any():
         power_col = df["power_percent"]
     else:
         power_col = df["on_percent"].fillna(0.0)
 
-    fig, (ax_temp, ax_pwr) = plt.subplots(
-        2, 1, figsize=(14, 8), sharex=True,
-        gridspec_kw={"height_ratios": [3, 1]},
+    has_control = df["smartpi_u_ff"].notna().any() or df["smartpi_u_pi"].notna().any()
+    n_panels = 3 if has_control else 2
+    height_ratios = [3, 1, 1] if has_control else [3, 1]
+
+    fig, axes = plt.subplots(
+        n_panels, 1, figsize=(14, 8), sharex=True,
+        gridspec_kw={"height_ratios": height_ratios},
     )
+    ax_temp, ax_pwr = axes[0], axes[1]
+    ax_ctrl = axes[2] if has_control else None
 
     # Temperature panel.
     ax_temp.plot(
@@ -205,21 +219,34 @@ def save_plot(
     ax_temp.legend(loc="upper right", fontsize=9)
     ax_temp.grid(alpha=0.25)
 
-    # Power panel: planned duty cycle (VT power_percent) and actual switch state.
+    # Power panel: planned duty cycle only (switch state removed — clutters plot).
     ax_pwr.fill_between(
         df["elapsed_h"], power_col.fillna(0.0),
         alpha=0.4, label="Duty cycle (VT planned, %)", color="tab:red",
     )
-    if df["switch_state"].notna().any():
-        ax_pwr.plot(
-            df["elapsed_h"], df["switch_state"] * 100.0,
-            linewidth=0.6, color="tab:blue", alpha=0.7, label="Switch state (actual, %)",
-        )
     ax_pwr.set_ylabel("Power (%)")
     ax_pwr.set_ylim(-2, 102)
-    ax_pwr.set_xlabel("Elapsed time (h)")
+    if ax_ctrl is None:
+        ax_pwr.set_xlabel("Elapsed time (h)")
     ax_pwr.legend(loc="upper right", fontsize=8)
     ax_pwr.grid(alpha=0.25)
+
+    # SmartPI control signals panel (u_ff and u_pi).
+    if ax_ctrl is not None:
+        if df["smartpi_u_ff"].notna().any():
+            ax_ctrl.plot(
+                df["elapsed_h"], df["smartpi_u_ff"],
+                linewidth=1.0, label="u_ff", color="tab:green",
+            )
+        if df["smartpi_u_pi"].notna().any():
+            ax_ctrl.plot(
+                df["elapsed_h"], df["smartpi_u_pi"],
+                linewidth=1.0, label="u_pi", color="tab:purple",
+            )
+        ax_ctrl.set_ylabel("Control signal")
+        ax_ctrl.set_xlabel("Elapsed time (h)")
+        ax_ctrl.legend(loc="upper right", fontsize=8)
+        ax_ctrl.grid(alpha=0.25)
 
     # Title.
     title = scenario.get("name", "VT Simulation")
