@@ -179,8 +179,8 @@ _VT_DEFAULTS: dict[str, Any] = {
     "smart_pi_debug": True,
     "smart_pi_aggregation_mode": "weighted_median",
     "cycle_min": 15,
-    "minimal_activation_delay": 20,
-    "minimal_deactivation_delay": 20,
+    "minimal_activation_delay": 0,
+    "minimal_deactivation_delay": 0,
     "heater_keep_alive": 0,
     "inverse_switch_command": False,
     "ac_mode": False,
@@ -380,7 +380,38 @@ async def test_vt_scenario(
     )
 
     # ------------------------------------------------------------------
-    # 5b. Limit VT platform forwarding to what the simulation actually needs.
+    # 5b. Patch CycleScheduler to use simulated time.
+    #
+    # CycleScheduler uses two real-wall-clock mechanisms that break in fast
+    # simulation:
+    #   1. time.time() for _cycle_start_time and current_t — in fast simulation
+    #      current_t is always ~0 ms, so compute_target_state sees the switch
+    #      permanently at the start of its cycle.
+    #   2. async_call_later (loop.call_at with real monotonic) — the ON/OFF tick
+    #      and cycle-end repeat callbacks never fire because real seconds never
+    #      accumulate during a fast simulated run.
+    #
+    # Fix: route time.time() through the SimClock so cycle position arithmetic
+    # is correct, and replace async_call_later with a version that fires on
+    # EVENT_TIME_CHANGED (which VTsim already drives via async_fire_time_changed).
+    # ------------------------------------------------------------------
+    import time as _time_mod
+    monkeypatch.setattr(_time_mod, "time", clock.time)
+
+    from datetime import timedelta as _timedelta
+    from homeassistant.helpers.event import async_track_point_in_time as _atp
+
+    def _sim_async_call_later(hass_obj, delay, action):
+        when = clock.utcnow() + _timedelta(seconds=delay)
+        return _atp(hass_obj, action, when)
+
+    monkeypatch.setattr(
+        "custom_components.versatile_thermostat.cycle_scheduler.async_call_later",
+        _sim_async_call_later,
+    )
+
+    # ------------------------------------------------------------------
+    # 5c. Limit VT platform forwarding to what the simulation actually needs.
     #     Forwarding all platforms can hang under some HA test/plugin combos.
     # ------------------------------------------------------------------
     # climate must come before number — VT's number entities self-register into
