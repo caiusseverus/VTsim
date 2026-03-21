@@ -383,9 +383,12 @@ async def test_vt_scenario(
     # 5b. Limit VT platform forwarding to what the simulation actually needs.
     #     Forwarding all platforms can hang under some HA test/plugin combos.
     # ------------------------------------------------------------------
-    _trace("limit VT PLATFORMS to climate only")
+    # climate must come before number — VT's number entities self-register into
+    # the VTherm API after the climate entity is created.  Without number, all
+    # preset temperatures fall back to min_temp and VT never commands any heat.
+    _trace("limit VT PLATFORMS to climate + number")
     import custom_components.versatile_thermostat as vt_mod
-    monkeypatch.setattr(vt_mod, "PLATFORMS", ["climate"])
+    monkeypatch.setattr(vt_mod, "PLATFORMS", ["climate", "number"])
 
     # ------------------------------------------------------------------
     # 6. Load VT integration
