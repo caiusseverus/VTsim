@@ -16,12 +16,19 @@ _root_str = str(_root)
 if _root_str not in sys.path:
     sys.path.insert(0, _root_str)
 
-# If VTSIM_VT_DIR is set, add its grandparent to sys.path so that
-# `import custom_components.versatile_thermostat` resolves at module load time,
-# before any fixtures run. Without this, the top-level import in test_vt_scenarios.py
-# fails when there is no custom_components/ symlink in the project root.
+# If VTSIM_VT_DIR is set, route custom_components.versatile_thermostat imports to the
+# versioned VT directory before any test files are collected.
 _vt_dir_env = os.environ.get("VTSIM_VT_DIR", "")
 if _vt_dir_env:
+    # Inject the versioned VT's custom_components/ dir into the already-loaded
+    # custom_components package path. VTsim's own custom_components/__init__.py
+    # makes it a regular package that wins over sys.path search order; manipulating
+    # __path__ directly ensures the versioned VT is found first for sub-imports.
+    import custom_components as _cc_pkg
+    _vt_cc_dir = str(Path(_vt_dir_env).resolve().parent)  # the custom_components/ dir
+    if _vt_cc_dir not in _cc_pkg.__path__:
+        _cc_pkg.__path__.insert(0, _vt_cc_dir)
+    # Keep the grandparent on sys.path as a fallback for direct imports
     _vt_parent = str(Path(_vt_dir_env).resolve().parents[1])
     if _vt_parent not in sys.path:
         sys.path.insert(0, _vt_parent)
