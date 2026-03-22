@@ -38,11 +38,22 @@ from homeassistant.loader import DATA_CUSTOM_COMPONENTS
 from homeassistant.util import dt as dt_util
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
-# Ensure project root is importable (custom_components.* and sim.*)
+# Ensure project root is importable (custom_components.* and sim.*), while
+# preserving VTSIM_VT_DIR precedence when the worker targets an alternate VT
+# checkout. Without the reordering below, reinserting the repo root at
+# sys.path[0] makes every run import the in-repo VT code, even if VTSIM_VT_DIR
+# points at a different version.
 _PROJECT_ROOT = Path(__file__).resolve().parents[1]
-for _p in (str(_PROJECT_ROOT), str(_PROJECT_ROOT / "tests")):
+for _p in (str(_PROJECT_ROOT / "tests"), str(_PROJECT_ROOT)):
     if _p not in sys.path:
         sys.path.insert(0, _p)
+
+_vt_dir_env = os.getenv("VTSIM_VT_DIR", "")
+if _vt_dir_env:
+    _vt_parent = str(Path(_vt_dir_env).resolve().parents[1])
+    if _vt_parent in sys.path:
+        sys.path.remove(_vt_parent)
+    sys.path.insert(0, _vt_parent)
 
 from sim.analysis import compute_metrics, save_plot, write_records_csv, write_summary_csv
 from sim.engine import run_simulation
