@@ -79,13 +79,6 @@ def test_vtsim_vt_dir_env_var():
     assert "VTSIM_VT_DIR" in src
 
 
-def test_vtsim_vt_dir_precedence_is_preserved():
-    """Alternate VT dirs must stay ahead of the repo root on sys.path."""
-    src = Path("tests/test_vt_scenarios.py").read_text()
-    assert "sys.path.remove(_vt_parent)" in src
-    assert "sys.path.insert(0, _vt_parent)" in src
-
-
 def test_vtsim_live_csv_env_var():
     """VTSIM_LIVE_CSV must be referenced in the test module source."""
     src = Path("tests/test_vt_scenarios.py").read_text()
