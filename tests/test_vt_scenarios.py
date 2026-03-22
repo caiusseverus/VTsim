@@ -23,7 +23,6 @@ import csv as _csv_module
 import json
 import os
 import shutil
-import sys
 import time
 from dataclasses import dataclass, field
 from datetime import timedelta
@@ -38,11 +37,13 @@ from homeassistant.loader import DATA_CUSTOM_COMPONENTS
 from homeassistant.util import dt as dt_util
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
-# Ensure project root is importable (custom_components.* and sim.*)
+# Ensure project-root imports work, and force VTherm imports to use the
+# selected checkout before any VT modules are imported.
 _PROJECT_ROOT = Path(__file__).resolve().parents[1]
-for _p in (str(_PROJECT_ROOT), str(_PROJECT_ROOT / "tests")):
-    if _p not in sys.path:
-        sys.path.insert(0, _p)
+
+from vt_loader import activate_vt_checkout, import_vt_module
+
+activate_vt_checkout(_PROJECT_ROOT)
 
 from sim.analysis import compute_metrics, save_plot, write_records_csv, write_summary_csv
 from sim.engine import run_simulation
@@ -52,7 +53,6 @@ from sim.virtual_entities import (
     async_setup_virtual_switch,
     inject_temperature,
 )
-from custom_components.versatile_thermostat.vtherm_api import VersatileThermostatAPI
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -366,7 +366,12 @@ async def test_vt_scenario(
     _prepare_custom_components(hass)
     hass.data.pop(DATA_CUSTOM_COMPONENTS, None)
 
-    # Reset VT API singleton so stale hass from a prior test is not reused.
+    # Force future VT imports to use the requested checkout and clear any stale
+    # modules cached from an earlier import path.
+    activate_vt_checkout(_PROJECT_ROOT)
+    VersatileThermostatAPI = import_vt_module(
+        "custom_components.versatile_thermostat.vtherm_api", _PROJECT_ROOT
+    ).VersatileThermostatAPI
     VersatileThermostatAPI._hass = None
 
     # ------------------------------------------------------------------
