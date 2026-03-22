@@ -45,6 +45,13 @@ from vt_loader import activate_vt_checkout, import_vt_module
 
 activate_vt_checkout(_PROJECT_ROOT)
 
+_vt_dir_env = os.getenv("VTSIM_VT_DIR", "")
+if _vt_dir_env:
+    _vt_parent = str(Path(_vt_dir_env).resolve().parents[1])
+    if _vt_parent in sys.path:
+        sys.path.remove(_vt_parent)
+    sys.path.insert(0, _vt_parent)
+
 from sim.analysis import compute_metrics, save_plot, write_records_csv, write_summary_csv
 from sim.engine import run_simulation
 from sim.models import create_model
