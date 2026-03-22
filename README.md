@@ -48,17 +48,17 @@ UV_CACHE_DIR=/tmp/uv-cache uv run pytest -q tests/test_vt_scenarios.py -s
 UV_CACHE_DIR=/tmp/uv-cache uv run pytest -q "tests/test_vt_scenarios.py::test_vt_scenario[pwm_r2c2]" -s
 ```
 
-Results are written to `results/<scenario_name>.png` and `results/summary.csv`.
+Results are written to `results/<scenario_name>.png` and `results/summary.csv` (pytest runs only; web UI runs go to `webapp/runs/`).
 
 ## Scenarios
 
-| Scenario | Model | Algorithm | Duration | SSE limit |
-|---|---|---|---|---|
-| pwm_r2c2_standard | R2C2 standard room | SmartPI | 48h | 0.5°C |
-| pwm_r2c2_high_inertia | R2C2 heavy stone | SmartPI | 72h | 1.0°C |
-| pwm_r2c2_low_inertia | R2C2 light build | SmartPI | 24h | 0.5°C |
-| pwm_r2c2_tpi | R2C2 standard room | TPI | 48h | 1.5°C |
-| pwm_simple_tpi | R1C1 simple | TPI | 24h | 1.5°C |
+Scenarios are defined by YAML files in `tests/models/`. Each file specifies the thermal model, control algorithm, simulation duration, and VT configuration. See `tests/models/_template.yaml` for the full schema.
+
+To run a specific scenario by filename stem:
+
+```bash
+UV_CACHE_DIR=/tmp/uv-cache uv run pytest -q "tests/test_vt_scenarios.py::test_vt_scenario[pwm_r2c2]" -s
+```
 
 ## Web UI
 
@@ -69,4 +69,4 @@ Builds the React frontend and starts the FastAPI backend at `http://localhost:80
 ./run.sh --build  # force rebuild of frontend
 ```
 
-Run outputs are stored in `webapp/runs/` and accessible via the UI.
+Run outputs are stored in `webapp/runs/` and accessible via the UI. The UI includes pages for managing thermal models, presets, schedules, VT versions, and run results, with live monitoring during active runs and a comparison view across multiple runs.
