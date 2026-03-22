@@ -23,6 +23,7 @@ import csv as _csv_module
 import json
 import os
 import shutil
+import sys
 import time
 from dataclasses import dataclass, field
 from datetime import timedelta
@@ -37,13 +38,15 @@ from homeassistant.loader import DATA_CUSTOM_COMPONENTS
 from homeassistant.util import dt as dt_util
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
-# Ensure project-root imports work, and force VTherm imports to use the
-# selected checkout before any VT modules are imported.
+# Ensure project root is importable (custom_components.* and sim.*), while
+# preserving VTSIM_VT_DIR precedence when the worker targets an alternate VT
+# checkout. Without the reordering below, reinserting the repo root at
+# sys.path[0] makes every run import the in-repo VT code, even if VTSIM_VT_DIR
+# points at a different version.
 _PROJECT_ROOT = Path(__file__).resolve().parents[1]
-
-from vt_loader import activate_vt_checkout, import_vt_module
-
-activate_vt_checkout(_PROJECT_ROOT)
+for _p in (str(_PROJECT_ROOT / "tests"), str(_PROJECT_ROOT)):
+    if _p not in sys.path:
+        sys.path.insert(0, _p)
 
 _vt_dir_env = os.getenv("VTSIM_VT_DIR", "")
 if _vt_dir_env:
@@ -60,6 +63,7 @@ from sim.virtual_entities import (
     async_setup_virtual_switch,
     inject_temperature,
 )
+from custom_components.versatile_thermostat.vtherm_api import VersatileThermostatAPI
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -373,12 +377,7 @@ async def test_vt_scenario(
     _prepare_custom_components(hass)
     hass.data.pop(DATA_CUSTOM_COMPONENTS, None)
 
-    # Force future VT imports to use the requested checkout and clear any stale
-    # modules cached from an earlier import path.
-    activate_vt_checkout(_PROJECT_ROOT)
-    VersatileThermostatAPI = import_vt_module(
-        "custom_components.versatile_thermostat.vtherm_api", _PROJECT_ROOT
-    ).VersatileThermostatAPI
+    # Reset VT API singleton so stale hass from a prior test is not reused.
     VersatileThermostatAPI._hass = None
 
     # ------------------------------------------------------------------
