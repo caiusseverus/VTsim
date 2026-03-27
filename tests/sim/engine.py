@@ -39,6 +39,13 @@ from typing import Any
 # Used for wall-clock timeout checks inside the simulation loop.
 _REAL_MONOTONIC = _time_module.monotonic
 
+# Default wall-clock timeout for the simulation loop.  Can be overridden via
+# the VTSIM_WALL_CLOCK_TIMEOUT_S environment variable (useful on slow CI/Docker
+# hosts).  The built-in default is 1800 s (30 min).
+_DEFAULT_WALL_CLOCK_TIMEOUT_S: float = float(
+    os.environ.get("VTSIM_WALL_CLOCK_TIMEOUT_S", "1800")
+)
+
 from homeassistant.core import HomeAssistant
 from homeassistant.util import dt as dt_util
 from pytest_homeassistant_custom_component.common import async_fire_time_changed
@@ -237,7 +244,7 @@ async def run_simulation(
     climate_entity_id: str,
     scenario: dict[str, Any],
     advance_clock: Callable[[float], None],
-    wall_clock_timeout_s: float = 600.0,
+    wall_clock_timeout_s: float = _DEFAULT_WALL_CLOCK_TIMEOUT_S,
     on_record: "Callable[[dict[str, Any]], None] | None" = None,
 ) -> list[dict[str, Any]]:
     """Run the simulation loop and return a list of timestamped snapshot records.
