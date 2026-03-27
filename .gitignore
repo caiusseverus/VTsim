@@ -8,6 +8,7 @@ __pycache__/
 *.pyc
 *.pyo
 custom_components/
+!custom_components/__init__.py
 
 # Simulation outputs (all generated — not tracked)
 results/
