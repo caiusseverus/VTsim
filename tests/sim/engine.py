@@ -48,7 +48,7 @@ _DEFAULT_WALL_CLOCK_TIMEOUT_S: float = float(
 
 from homeassistant.core import HomeAssistant
 from homeassistant.util import dt as dt_util
-from pytest_homeassistant_custom_component.common import async_fire_time_changed
+from pytest_homeassistant_custom_component.common import async_fire_time_changed, get_scheduled_timer_handles
 
 from .virtual_entities import inject_temperature, read_number_power, read_switch_debug, read_switch_power
 
@@ -67,11 +67,46 @@ from disturbances import ExternalTempProfile, OccupancyProfile, WeatherProfile  
 from .sensor_pipeline import SensorPipeline  # noqa: E402
 
 _LOG = logging.getLogger(__name__)
+_MONOTONIC_RESOLUTION = 1e-9
 
 
 # ---------------------------------------------------------------------------
 # Snapshot
 # ---------------------------------------------------------------------------
+
+def _collect_timer_boundaries_within_step(
+    hass: HomeAssistant,
+    *,
+    step_start: datetime,
+    step_end: datetime,
+) -> list[datetime]:
+    """Return pending timer boundaries that fall strictly inside this step."""
+    try:
+        loop_now = hass.loop.time()
+        step_start_utc = dt_util.as_utc(step_start)
+        step_end_utc = dt_util.as_utc(step_end)
+        boundaries: dict[float, datetime] = {}
+
+        for handle in list(get_scheduled_timer_handles(hass.loop)):
+            if not isinstance(handle, asyncio.TimerHandle) or handle.cancelled():
+                continue
+
+            future_seconds = handle.when() - (loop_now + _MONOTONIC_RESOLUTION)
+            if future_seconds <= 0.0:
+                continue
+
+            boundary = step_start_utc + timedelta(seconds=future_seconds)
+            boundary_ts = boundary.timestamp()
+            if step_start_utc.timestamp() < boundary_ts < step_end_utc.timestamp():
+                boundaries[boundary_ts] = boundary
+
+        return [boundaries[key] for key in sorted(boundaries)]
+    except Exception as err:
+        _LOG.warning(
+            "Falling back to coarse step timing; could not inspect pending timers: %s",
+            err,
+        )
+        return []
 
 def _capture_snapshot(
     hass: HomeAssistant,
@@ -526,9 +561,30 @@ async def run_simulation(
         # not the raw physics ground truth.
         sensor_temp = pipeline.step(model.temperature, dt_s, elapsed_s_end)
 
-        # Advance simulated monotonic/wall-clock before publishing sensors so
-        # sensor-driven control paths observe the new step timestamp.
-        advance_clock(dt_s)
+        step_start_time = sim_start + timedelta(seconds=elapsed_s_start)
+        step_end_time = sim_start + timedelta(seconds=elapsed_s_end)
+
+        # Fire pending time-based callbacks that fall strictly inside this
+        # outer step at their own simulated timestamps.
+        elapsed_fired_s = 0.0
+        for boundary in _collect_timer_boundaries_within_step(
+            hass,
+            step_start=step_start_time,
+            step_end=step_end_time,
+        ):
+            boundary_elapsed_s = max(
+                0.0,
+                (dt_util.as_utc(boundary) - dt_util.as_utc(step_start_time)).total_seconds(),
+            )
+            advance_clock(boundary_elapsed_s - elapsed_fired_s)
+            elapsed_fired_s = boundary_elapsed_s
+            async_fire_time_changed(hass, boundary)
+            await asyncio.wait_for(hass.async_block_till_done(), timeout=30.0)
+
+        # Advance simulated monotonic/wall-clock to the step end before
+        # publishing sensors so sensor-driven control paths observe the new
+        # step timestamp.
+        advance_clock(dt_s - elapsed_fired_s)
 
         # Inject new temperatures and drain them separately from time-driven
         # callbacks. This avoids collapsing sensor publication, scheduler
@@ -545,8 +601,7 @@ async def run_simulation(
         #   • async_call_later callbacks (CycleScheduler ON→OFF transitions)
         # Sensor state changes were already drained above.
         switch_state_before_tick = _read_power()
-        current_time = sim_start + timedelta(seconds=elapsed_s_end)
-        async_fire_time_changed(hass, current_time)
+        async_fire_time_changed(hass, step_end_time)
         await asyncio.wait_for(hass.async_block_till_done(), timeout=30.0)
 
         # Read heater command for the NEXT physics step.
