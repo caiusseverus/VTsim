@@ -44,7 +44,7 @@ for _p in (str(_PROJECT_ROOT), str(_PROJECT_ROOT / "tests")):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
-from sim.analysis import compute_metrics, save_plot, write_records_csv, write_summary_csv
+from sim.analysis import compute_metrics, save_plot, write_ha_export_json, write_records_csv, write_summary_csv
 from sim.engine import run_simulation
 from sim.models import create_model
 from sim.virtual_entities import (
@@ -521,7 +521,7 @@ async def test_vt_scenario(
                     _w.writerow({k: ("" if v is None else v) for k, v in record.items()})
 
         _trace("run simulation")
-        records = await run_simulation(
+        records, sim_start = await run_simulation(
             hass,
             model=model,
             control_mode=control_mode,
@@ -546,6 +546,8 @@ async def test_vt_scenario(
         save_plot(records, scenario, output_path, metrics)
         records_csv_path = _output_dir / f"{scenario_name}_records.csv"
         write_records_csv(records, records_csv_path)
+        ha_export_path = _output_dir / f"{scenario_name}_ha_export.json"
+        write_ha_export_json(records, climate_entity, ha_export_path, sim_start)
         # Write per-run metrics JSON for web backend consumption.
         if _output_dir_override:
             metrics_path = _output_dir / "metrics.json"

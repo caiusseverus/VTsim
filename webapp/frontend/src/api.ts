@@ -70,6 +70,35 @@ export interface ImportResult {
   missing: [string, unknown][]
 }
 
+export interface HaCompareCell {
+  run_id: string
+  model: string
+  cell: string   // "{vt_version}_{preset}"
+  label: string
+}
+
+export interface HaCompareDiffRow {
+  field: string
+  a: unknown
+  b: unknown
+  match: boolean
+}
+
+export interface HaCompareSeries {
+  type: 'categorical' | 'numeric'
+  a: { times_h: number[]; values: (string | number | null)[] }
+  b: { times_h: number[]; values: (string | number | null)[] }
+}
+
+export interface HaCompareResult {
+  label_a: string
+  label_b: string
+  config_diff: HaCompareDiffRow[]
+  series: Record<string, HaCompareSeries>
+  mode_fields: string[]
+  numeric_fields: string[]
+}
+
 export interface HaHistoryPoint {
   elapsed_h: number
   temperature: number
@@ -190,9 +219,40 @@ export const api = {
     if (!res.ok) throw new Error(`${res.status} ${await res.text()}`)
     return res.json()
   },
+  verifyRun: (body: {
+    name: string
+    model_names: string[]
+    version_names: string[]
+    thermostat_params: Record<string, unknown>
+    schedule_entries: Array<{ at_hour: number; target_temp: number }>
+    ha_history?: HaHistoryPoint[]
+    starting_conditions?: Record<string, unknown>
+  }) => fetchJson<{ run_id: string }>('/verify/run', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify(body),
+  }),
 
   resultPlotUrl: (runId: string, model: string, versionPreset: string) =>
     `${BASE}/results/${runId}/${model}/${versionPreset}/plot`,
   resultRecordsUrl: (runId: string, model: string, versionPreset: string) =>
     `${BASE}/results/${runId}/${model}/${versionPreset}/records`,
+
+  // HA-format JSON comparison
+  haCompareCells: () => fetchJson<HaCompareCell[]>('/ha-compare/cells'),
+  haCompareUpload: async (file: File): Promise<{file_id: string}> => {
+    const form = new FormData()
+    form.append('file', file)
+    const res = await fetch(`${BASE}/ha-compare/upload`, {method: 'POST', body: form})
+    if (!res.ok) throw new Error(`${res.status} ${await res.text()}`)
+    return res.json()
+  },
+  haCompare: (
+    sourceA: {type: 'run_cell'; run_id: string; model: string; cell: string} | {type: 'upload'; file_id: string},
+    sourceB: {type: 'run_cell'; run_id: string; model: string; cell: string} | {type: 'upload'; file_id: string},
+  ) => fetchJson<HaCompareResult>('/ha-compare', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({source_a: sourceA, source_b: sourceB}),
+  }),
 }

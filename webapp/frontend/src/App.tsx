@@ -7,6 +7,8 @@ import NewRunPage from './pages/NewRunPage'
 import RunsPage from './pages/RunsPage'
 import ResultsPage from './pages/ResultsPage'
 import ComparisonPage from './pages/ComparisonPage'
+import HaComparePage from './pages/HaComparePage'
+import VerifyPage from './pages/VerifyPage'
 
 const navItem = ({ isActive }: { isActive: boolean }) =>
   `flex items-center h-full px-3 text-sm border-b-2 transition-colors ${
@@ -37,6 +39,8 @@ function Nav() {
       <NavLink to="/runs/new" className={navItem}>New Run</NavLink>
       <NavLink to="/runs" end className={navItem}>Runs</NavLink>
       <NavLink to="/compare" className={navItem}>Compare</NavLink>
+      <NavLink to="/ha-compare" className={navItem}>HA Compare</NavLink>
+      <NavLink to="/verify" className={navItem}>Verify</NavLink>
     </nav>
   )
 }
@@ -58,6 +62,8 @@ export default function App() {
               <Route path="/runs" element={<RunsPage />} />
               <Route path="/runs/:runId/results" element={<ResultsPage />} />
               <Route path="/compare" element={<ComparisonPage />} />
+              <Route path="/ha-compare" element={<HaComparePage />} />
+              <Route path="/verify" element={<VerifyPage />} />
             </Routes>
           </div>
         </main>

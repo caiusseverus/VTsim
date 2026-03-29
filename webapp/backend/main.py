@@ -7,7 +7,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, HTTPException, BackgroundTasks
+from fastapi import FastAPI, HTTPException, BackgroundTasks, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -22,6 +22,8 @@ from . import presets as pr
 from . import schedules as sc
 from . import importer as im
 from . import runs as rn
+from . import verify as ve
+from . import ha_compare as hc
 
 app = FastAPI(title="VTsim Web API")
 
@@ -319,6 +321,50 @@ def import_ha_state(body: HAStateBody):
     return im.parse_ha_state(body.yaml_text)
 
 
+# ---------------------------------------------------------------------------
+# HA Log Verify
+# ---------------------------------------------------------------------------
+
+@app.post("/api/verify/parse")
+async def verify_parse(file: UploadFile):
+    try:
+        import json as _json
+        raw = await file.read()
+        records = _json.loads(raw)
+        if not isinstance(records, list):
+            raise HTTPException(400, "Expected a JSON array of HA state records")
+        return ve.parse_ha_log(records)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
+class VerifyRunBody(BaseModel):
+    name: str
+    model_names: list[str]
+    version_names: list[str]
+    thermostat_params: dict[str, Any]
+    schedule_entries: list[dict[str, Any]]
+    ha_history: list[dict[str, Any]] | None = None
+    starting_conditions: dict[str, Any] | None = None
+
+
+@app.post("/api/verify/run")
+async def verify_run(body: VerifyRunBody, background_tasks: BackgroundTasks):
+    try:
+        run_id = rn.create_run_direct(
+            name=body.name,
+            model_names=body.model_names,
+            version_names=body.version_names,
+            thermostat_params=body.thermostat_params,
+            schedule_entries=body.schedule_entries,
+            ha_history=body.ha_history,
+            starting_conditions=body.starting_conditions,
+        )
+    except (KeyError, ValueError) as e:
+        raise HTTPException(400, str(e))
+    background_tasks.add_task(rn.execute_run, run_id)
+    return {"run_id": run_id}
+
 
 
 # ---------------------------------------------------------------------------
@@ -430,6 +476,74 @@ def result_records(run_id: str, model: str, version_preset: str):
         raise HTTPException(404)
     return FileResponse(p, media_type="text/csv",
                         headers={"Content-Disposition": f"attachment; filename={model}_records.csv"})
+
+
+# ---------------------------------------------------------------------------
+# HA-format JSON comparison
+# ---------------------------------------------------------------------------
+
+@app.get("/api/ha-compare/cells")
+def ha_compare_cells():
+    """List all run cells that have an ha_export.json available."""
+    return hc.list_available_cells()
+
+
+@app.post("/api/ha-compare/upload")
+async def ha_compare_upload(file: UploadFile):
+    """Accept a raw ha_export JSON file and return an opaque file_id."""
+    raw = await file.read()
+    try:
+        # Validate it parses as a JSON array before storing
+        parsed = json.loads(raw)
+        if not isinstance(parsed, list) or not parsed:
+            raise ValueError("Expected a non-empty JSON array")
+    except (json.JSONDecodeError, ValueError) as e:
+        raise HTTPException(400, f"Invalid JSON: {e}")
+    file_id = hc.save_upload(raw)
+    return {"file_id": file_id}
+
+
+class HaCompareSource(BaseModel):
+    # Either "run_cell" or "upload"
+    type: str
+    # For type="run_cell":
+    run_id: str | None = None
+    model: str | None = None
+    cell: str | None = None
+    # For type="upload":
+    file_id: str | None = None
+
+
+class HaCompareBody(BaseModel):
+    source_a: HaCompareSource
+    source_b: HaCompareSource
+
+
+def _load_source(src: HaCompareSource) -> list[dict]:
+    if src.type == "run_cell":
+        if not (src.run_id and src.model and src.cell):
+            raise HTTPException(400, "run_cell source requires run_id, model, cell")
+        try:
+            return hc.load_run_cell(src.run_id, src.model, src.cell)
+        except FileNotFoundError as e:
+            raise HTTPException(404, str(e))
+    elif src.type == "upload":
+        if not src.file_id:
+            raise HTTPException(400, "upload source requires file_id")
+        try:
+            return hc.load_upload(src.file_id)
+        except FileNotFoundError as e:
+            raise HTTPException(404, str(e))
+    else:
+        raise HTTPException(400, f"Unknown source type: {src.type!r}")
+
+
+@app.post("/api/ha-compare")
+def ha_compare(body: HaCompareBody):
+    """Run comparison between two HA-format JSON sources and return chart data."""
+    records_a = _load_source(body.source_a)
+    records_b = _load_source(body.source_b)
+    return hc.compare(records_a, records_b)
 
 
 if FRONTEND_DIST.exists():

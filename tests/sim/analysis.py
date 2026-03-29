@@ -11,6 +11,8 @@ Usage:
 from __future__ import annotations
 
 import csv
+import json
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -304,6 +306,77 @@ def write_records_csv(
         writer.writeheader()
         for row in records:
             writer.writerow({k: ("" if v is None else v) for k, v in row.items()})
+
+
+def write_ha_export_json(
+    records: list[dict[str, Any]],
+    climate_entity_id: str,
+    output_path: Path,
+    sim_start: datetime,
+) -> None:
+    """Write simulation records in HA history-exporter JSON format.
+
+    Each record in the output array matches the structure produced by the HA
+    history exporter, enabling direct field-by-field comparison with real HA
+    data.  The complete VT attribute dict (as VT reports it to HA) is preserved
+    under ``attributes``.  Sim physics ground truth (model temperature, sensor
+    temperature, switch state, etc.) is added under ``attributes.sim_ground_truth``
+    so it doesn't conflict with any real VT field.
+
+    Args:
+        records:            Output from ``run_simulation()``.
+        climate_entity_id:  The VT climate entity ID used during simulation.
+        output_path:        Destination path for the JSON file.
+        sim_start:          UTC datetime when the simulation began (returned by
+                            ``run_simulation()`` alongside the records list).
+    """
+    if not records:
+        return
+
+    # Keys that belong in sim_ground_truth rather than the HA-format attributes.
+    # These are simulation-only fields not present in real HA data.
+    _SIM_KEYS = {
+        "elapsed_s", "elapsed_h", "sensor_temperature",
+        "model_temperature", "model_ext_temperature",
+        "model_effective_heater_power_w", "model_heating_rate_c_per_s",
+        "model_heat_loss_rate_c_per_s", "model_net_heat_rate_c_per_s",
+        "switch_state",
+    }
+
+    if sim_start.tzinfo is None:
+        sim_start = sim_start.replace(tzinfo=timezone.utc)
+
+    export: list[dict[str, Any]] = []
+    for record in records:
+        elapsed_s = float(record.get("elapsed_s", 0.0))
+        ts: datetime = sim_start + timedelta(seconds=elapsed_s)
+        ts_iso = ts.isoformat()
+
+        # Start with the full VT attribute dict captured at this timestep.
+        raw_attrs: dict[str, Any] = dict(record.get("_vt_raw_attributes") or {})
+
+        # Collect sim ground truth: explicit keys + any model_* extras.
+        sim_gt: dict[str, Any] = {
+            k: record[k] for k in _SIM_KEYS if k in record
+        }
+        for k, v in record.items():
+            if k.startswith("model_") and k not in sim_gt:
+                sim_gt[k] = v
+
+        raw_attrs["sim_ground_truth"] = sim_gt
+
+        export.append({
+            "entity_id": climate_entity_id,
+            "last_changed": ts_iso,
+            "last_updated": ts_iso,
+            "state": record.get("_vt_entity_state") or record.get("hvac_mode") or "unknown",
+            "timestamp": ts.timestamp(),
+            "attributes": raw_attrs,
+        })
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    with output_path.open("w", encoding="utf-8") as f:
+        json.dump(export, f, indent=2, default=str)
 
 
 def write_summary_csv(

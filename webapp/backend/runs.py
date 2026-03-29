@@ -85,6 +85,62 @@ def create_run(
     return run_id
 
 
+def create_run_direct(
+    name: str,
+    model_names: list[str],
+    version_names: list[str],
+    thermostat_params: dict[str, Any],
+    schedule_entries: list[dict[str, Any]],
+    ha_history: list[dict] | None = None,
+    starting_conditions: dict | None = None,
+) -> str:
+    """Create a run from inline params, bypassing the preset/schedule registry.
+
+    Used by the verify flow where params come from a HA export rather than
+    saved presets/schedules.
+    """
+    from .vt_versions import get_vt_dir
+
+    _cfg.RUNS_DIR.mkdir(parents=True, exist_ok=True)
+    run_id = uuid.uuid4().hex[:12]
+
+    cells = []
+    for model_name in model_names:
+        for version_name in version_names:
+            vt_dir = get_vt_dir(version_name)
+            cells.append({
+                "model": model_name,
+                "vt_version": version_name,
+                "preset": "verify",
+                "vt_dir": vt_dir,
+                "thermostat_params": thermostat_params,
+                "schedule_entries": schedule_entries,
+                "status": "pending",
+            })
+
+    record: dict[str, Any] = {
+        "id": run_id,
+        "name": name,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "status": "pending",
+        "cells": cells,
+    }
+    if starting_conditions:
+        record["starting_conditions"] = starting_conditions
+
+    target = _run_path(run_id)
+    tmp = target.with_suffix(".tmp")
+    tmp.write_text(json.dumps(record, indent=2))
+    tmp.replace(target)
+
+    if ha_history:
+        history_dir = _cfg.RESULTS_DIR / run_id
+        history_dir.mkdir(parents=True, exist_ok=True)
+        (history_dir / "ha_history.json").write_text(json.dumps(ha_history))
+
+    return run_id
+
+
 def get_run(run_id: str) -> dict[str, Any]:
     path = _run_path(run_id)
     if not path.exists():
@@ -178,6 +234,9 @@ def build_worker_scenario_yaml(
         pm = starting_conditions.get("preset_mode")
         if pm and pm not in ("none", "None"):
             sim["initial_preset_mode"] = pm
+        # Allow caller to override the model's duration (e.g. to match HA export length)
+        if starting_conditions.get("duration_hours") is not None:
+            sim["duration_hours"] = float(starting_conditions["duration_hours"])
 
     merged["simulation"] = sim
 
@@ -196,11 +255,11 @@ async def _run_worker(
     thermostat_params: dict[str, Any],
     version_name: str,
     preset_name: str,
-    schedule_id: str,
+    schedule_id: str | None = None,
+    schedule_entries: list[dict[str, Any]] | None = None,
     starting_conditions: dict[str, Any] | None = None,
 ) -> None:
     from .models import get_model
-    from .schedules import get_schedule, resolve_schedule
 
     output_dir = _cfg.RESULTS_DIR / run_id / model_name / f"{version_name}_{preset_name}"
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -210,8 +269,11 @@ async def _run_worker(
         tmp_path = Path(tmp)
         model_data = get_model(model_name)
         duration_hours = float((model_data.get("simulation") or {}).get("duration_hours", 48))
-        schedule = get_schedule(schedule_id)
-        schedule_entries = resolve_schedule(schedule, duration_hours)
+        if schedule_entries is None:
+            # Resolve from registry when not supplied inline (normal run flow)
+            from .schedules import get_schedule, resolve_schedule
+            schedule = get_schedule(schedule_id)
+            schedule_entries = resolve_schedule(schedule, duration_hours)
         build_worker_scenario_yaml(model_data, thermostat_params, tmp_path,
                                    schedule_entries=schedule_entries, model_slug=model_name,
                                    starting_conditions=starting_conditions)
@@ -317,7 +379,8 @@ async def execute_run(run_id: str) -> None:
                 thermostat_params=cell["thermostat_params"],
                 version_name=cell["vt_version"],
                 preset_name=cell["preset"],
-                schedule_id=run["schedule_id"],
+                schedule_id=run.get("schedule_id"),
+                schedule_entries=cell.get("schedule_entries"),
                 starting_conditions=run.get("starting_conditions"),
             )
 

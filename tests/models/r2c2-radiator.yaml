@@ -1,22 +1,22 @@
-name: R2C2 Radiator (SmartPI)
-description: R2C2 room + wet radiator, SmartPI PWM
+name: r2c2-radiator
+description: To match Heating Simulator Weather in HA
 model:
   model_type: r2c2_radiator
   control_mode: linear
   initial_temperature: 18
   external_temperature_fixed: 5
   flow_temperature: 60
-  c_radiator: 15000
-  k_radiator: 12
+  c_radiator: 20000
+  k_radiator: 10
   radiator_exponent: 1.3
-  flow_rate_max_kg_s: 0.06
-  pipe_delay_seconds: 0
+  flow_rate_max_kg_s: 0.05
+  pipe_delay_seconds: 30
   valve_characteristic: linear
   radiator_convective_fraction: 0.75
   c_air: 1000000
-  c_fabric: 7500000
-  r_fabric: 0.008
-  r_ext: 0.032
+  c_fabric: 75000000
+  r_fabric: 0.005
+  r_ext: 0.06
   r_infiltration: 0.25
   window_area_m2: 2
   window_transmittance: 0.6
@@ -24,21 +24,21 @@ model:
 simulation:
   duration_hours: 72
   step_seconds: 10
-  record_every_seconds: 60
+  record_every_seconds: 10
   initial_hvac_mode: heat
   initial_preset_mode: eco
 sensor:
-  lag_tau: 0
+  lag_tau: 15
   bias: 0
   noise_std_dev: 0
   quantisation: 0
-  update_rate_s: 0
+  update_rate_s: 60
   min_interval_s: 0
   max_interval_s: 0
   delta: 0
 disturbances:
   ext_temp_profile:
-    enabled: true
+    enabled: false
     base: 5
     amplitude: 3
     min_hour: 5.5
@@ -51,7 +51,7 @@ disturbances:
     cooking_events_per_day: 2
     seed: 42
   weather:
-    wind_speed_m_s: 0
-    wind_coefficient: 0
-    rain_intensity: 0
-    rain_moisture_factor: 0
+    wind_speed_m_s: 4
+    wind_coefficient: 0.05
+    rain_intensity: 0.5
+    rain_moisture_factor: 0.5

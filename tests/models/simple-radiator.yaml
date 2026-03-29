@@ -1,0 +1,50 @@
+name: simple-radiator
+description: Heating Simulator - Simple external
+model:
+  model_type: radiator
+  control_mode: linear
+  initial_temperature: 18
+  external_temperature_fixed: 5
+  flow_temperature: 60
+  c_radiator: 20000
+  k_radiator: 10
+  radiator_exponent: 1.3
+  flow_rate_max_kg_s: 0.05
+  pipe_delay_seconds: 30
+  valve_characteristic: linear
+  heat_loss_coefficient_rad: 29.808542
+  c_room_rad: 4060638.9
+simulation:
+  duration_hours: 72
+  step_seconds: 10
+  record_every_seconds: 60
+  initial_hvac_mode: heat
+  initial_preset_mode: eco
+sensor:
+  lag_tau: 0
+  bias: 0
+  noise_std_dev: 0
+  quantisation: 0
+  update_rate_s: 0
+  min_interval_s: 0
+  max_interval_s: 0
+  delta: 0
+disturbances:
+  ext_temp_profile:
+    enabled: true
+    base: 5
+    amplitude: 3
+    min_hour: 5.5
+    max_hour: 14.5
+  occupancy:
+    enabled: false
+    max_occupants: 2
+    cooking_power_w: 1000
+    cooking_duration_s: 1200
+    cooking_events_per_day: 4
+    seed: 42
+  weather:
+    wind_speed_m_s: 0.01
+    wind_coefficient: 0.01
+    rain_intensity: 0.01
+    rain_moisture_factor: 0.01

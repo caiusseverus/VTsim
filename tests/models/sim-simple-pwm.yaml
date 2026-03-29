@@ -1,0 +1,45 @@
+name: Sim Simple PWM
+description: Match HA sim simple pwm
+model:
+  model_type: simple
+  control_mode: pwm
+  initial_temperature: 18
+  external_temperature_fixed: 5
+  heater_power_watts: 1100
+  heat_loss_coefficient: 29.808542
+  thermal_mass: 4060638.9
+  thermal_inertia: 0
+simulation:
+  duration_hours: 72
+  step_seconds: 10
+  record_every_seconds: 60
+  initial_hvac_mode: heat
+  initial_preset_mode: eco
+sensor:
+  lag_tau: 0
+  bias: 0
+  noise_std_dev: 0
+  quantisation: 0
+  update_rate_s: 0
+  min_interval_s: 0
+  max_interval_s: 0
+  delta: 0
+disturbances:
+  ext_temp_profile:
+    enabled: true
+    base: 5
+    amplitude: 3
+    min_hour: 5.5
+    max_hour: 14.5
+  occupancy:
+    enabled: false
+    max_occupants: 2
+    cooking_power_w: 0
+    cooking_duration_s: 1200
+    cooking_events_per_day: 2
+    seed: 42
+  weather:
+    wind_speed_m_s: 0
+    wind_coefficient: 0
+    rain_intensity: 0
+    rain_moisture_factor: 0

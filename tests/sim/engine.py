@@ -146,6 +146,10 @@ def _capture_snapshot(
             f"model_{k}": v
             for k, v in (getattr(model, "extra_state", None) or {}).items()
         },
+        # Full VT entity state for HA-format export — complete attribute dict as
+        # VT reports it, identical to what the HA exporter would capture.
+        "_vt_raw_attributes": dict(attrs),
+        "_vt_entity_state": state.state,
     }
 
 
@@ -449,4 +453,4 @@ async def run_simulation(
 
     if show_progress:
         print()  # end the progress line
-    return records
+    return records, sim_start
