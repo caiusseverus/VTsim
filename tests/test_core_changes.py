@@ -1,5 +1,6 @@
 """Unit tests for engine and analysis changes."""
 from __future__ import annotations
+import asyncio
 from sim.analysis import compute_metrics, _empty_metrics
 
 
@@ -47,7 +48,8 @@ def test_empty_metrics_includes_deadtime_heat_s():
 
 
 import inspect
-from sim.engine import _EventQueue, run_simulation
+from datetime import datetime, timezone
+from sim.engine import SimTimerScheduler, _EventQueue, run_simulation
 
 
 def test_run_simulation_accepts_on_record_parameter():
@@ -72,6 +74,67 @@ def test_event_queue_orders_by_time_then_priority_then_sequence():
         "later-inserted",
         "latest",
     ]
+
+
+class _FakeHass:
+    def __init__(self) -> None:
+        self.loop = asyncio.new_event_loop()
+        self.tasks: list[asyncio.Task] = []
+
+    def async_create_task(self, coro):
+        task = self.loop.create_task(coro)
+        self.tasks.append(task)
+        return task
+
+
+def test_sim_timer_scheduler_queues_pending_timer_on_attach():
+    now = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    scheduler = SimTimerScheduler(now_provider=lambda: now)
+    cancel = scheduler.schedule(_FakeHass(), 12.0, lambda when: when)
+    del cancel
+    queue = _EventQueue()
+
+    scheduler.attach(queue, sim_start=now)
+
+    event = queue.pop()
+    assert event.event_type == "scheduled_callback"
+    assert event.time_s == 12.0
+
+
+def test_sim_timer_scheduler_cancel_prevents_callback():
+    now = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    scheduler = SimTimerScheduler(now_provider=lambda: now)
+    queue = _EventQueue()
+    scheduler.attach(queue, sim_start=now)
+    fired: list[datetime] = []
+
+    cancel = scheduler.schedule(_FakeHass(), 5.0, lambda when: fired.append(when))
+    event = queue.pop()
+    cancel()
+    scheduler.fire(int(event.payload["timer_id"]))
+
+    assert fired == []
+
+
+def test_sim_timer_scheduler_creates_task_for_coroutine_callback():
+    now = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    scheduler = SimTimerScheduler(now_provider=lambda: now)
+    queue = _EventQueue()
+    scheduler.attach(queue, sim_start=now)
+    hass = _FakeHass()
+    fired: list[datetime] = []
+
+    async def _callback(when):
+        fired.append(when)
+
+    scheduler.schedule(hass, 1.0, _callback)
+    event = queue.pop()
+    scheduler.fire(int(event.payload["timer_id"]))
+    hass.loop.run_until_complete(asyncio.gather(*hass.tasks))
+    hass.loop.close()
+
+    assert len(hass.tasks) == 1
+    assert fired == [now.replace(second=1)]
 
 
 from pathlib import Path

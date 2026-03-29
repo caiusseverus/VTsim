@@ -45,7 +45,7 @@ for _p in (str(_PROJECT_ROOT), str(_PROJECT_ROOT / "tests")):
         sys.path.insert(0, _p)
 
 from sim.analysis import compute_metrics, save_plot, write_ha_export_json, write_records_csv, write_summary_csv
-from sim.engine import run_simulation
+from sim.engine import SimTimerScheduler, run_simulation
 from sim.models import create_model
 from sim.virtual_entities import (
     async_setup_virtual_number,
@@ -622,6 +622,7 @@ async def test_vt_scenario(
     # ------------------------------------------------------------------
     _trace("patch SmartPI monotonic clock")
     clock = SimClock(anchor=dt_util.utcnow().replace(microsecond=0))
+    timer_scheduler = SimTimerScheduler(now_provider=clock.utcnow)
     monkeypatch.setattr(
         "custom_components.versatile_thermostat.prop_algo_smartpi.time.monotonic",
         clock.monotonic,
@@ -647,12 +648,8 @@ async def test_vt_scenario(
     import time as _time_mod
     monkeypatch.setattr(_time_mod, "time", clock.time)
 
-    from datetime import timedelta as _timedelta
-    from homeassistant.helpers.event import async_track_point_in_time as _atp
-
     def _sim_async_call_later(hass_obj, delay, action):
-        when = clock.utcnow() + _timedelta(seconds=delay)
-        return _atp(hass_obj, action, when)
+        return timer_scheduler.schedule(hass_obj, delay, action)
 
     # cycle_scheduler was added in a later VT version — skip patching on older builds
     try:
@@ -720,28 +717,8 @@ async def test_vt_scenario(
         monkeypatch.setattr(time, "time", clock.time)
         monkeypatch.setattr(dt_util, "utcnow", clock.utcnow)
 
-        from homeassistant.core import callback
-        from homeassistant.helpers.event import async_track_point_in_time
-
         def _async_call_later_sim(hass_obj, delay, action):
-            when = dt_util.utcnow() + (
-                delay
-                if isinstance(delay, timedelta)
-                else timedelta(seconds=float(delay))
-            )
-
-            @callback
-            def _fire(now):
-                result = action(now)
-                if asyncio.iscoroutine(result):
-                    # Create the task immediately so it's in hass._tasks before
-                    # async_block_till_done() checks for pending work.
-                    # call_soon_threadsafe would defer task creation to the next
-                    # event loop iteration, causing async_block_till_done() to
-                    # exit early (empty _tasks) before the coroutine ever runs.
-                    hass_obj.async_create_task(result)
-
-            return async_track_point_in_time(hass_obj, _fire, when)
+            return timer_scheduler.schedule(hass_obj, delay, action)
 
         import homeassistant.helpers.event as ha_event
         monkeypatch.setattr(ha_event, "async_call_later", _async_call_later_sim)
@@ -781,6 +758,7 @@ async def test_vt_scenario(
             scenario=scenario,
             advance_clock=clock.advance,
             on_record=_on_record,
+            timer_scheduler=timer_scheduler,
         )
         _trace(f"simulation done records={len(records)}")
 

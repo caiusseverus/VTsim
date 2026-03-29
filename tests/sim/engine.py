@@ -50,7 +50,7 @@ _DEFAULT_WALL_CLOCK_TIMEOUT_S: float = float(
 
 from homeassistant.core import HomeAssistant
 from homeassistant.util import dt as dt_util
-from pytest_homeassistant_custom_component.common import async_fire_time_changed, get_scheduled_timer_handles
+from pytest_homeassistant_custom_component.common import async_fire_time_changed
 
 from .virtual_entities import inject_temperature, read_number_power, read_switch_debug, read_switch_power
 
@@ -124,43 +124,85 @@ class _EventQueue:
         return bool(self._heap)
 
 
+@dataclass(slots=True)
+class _ScheduledTimer:
+    timer_id: int
+    when: datetime
+    hass: HomeAssistant
+    action: Callable[[datetime], Any]
+    cancelled: bool = False
+
+
+class SimTimerScheduler:
+    """Engine-owned scheduler for patched async_call_later callbacks."""
+
+    def __init__(self, *, now_provider: Callable[[], datetime] | None = None) -> None:
+        self._now_provider = now_provider or dt_util.utcnow
+        self._timers: dict[int, _ScheduledTimer] = {}
+        self._next_timer_id = 0
+        self._event_queue: _EventQueue | None = None
+        self._sim_start: datetime | None = None
+
+    def schedule(
+        self,
+        hass: HomeAssistant,
+        delay: float | timedelta,
+        action: Callable[[datetime], Any],
+    ) -> Callable[[], None]:
+        delay_s = (
+            float(delay.total_seconds())
+            if isinstance(delay, timedelta)
+            else float(delay)
+        )
+        when = dt_util.as_utc(
+            self._now_provider() + timedelta(seconds=max(0.0, delay_s))
+        )
+        timer = _ScheduledTimer(
+            timer_id=self._next_timer_id,
+            when=when,
+            hass=hass,
+            action=action,
+        )
+        self._next_timer_id += 1
+        self._timers[timer.timer_id] = timer
+        self._enqueue(timer)
+
+        def _cancel() -> None:
+            stored = self._timers.pop(timer.timer_id, None)
+            if stored is not None:
+                stored.cancelled = True
+
+        return _cancel
+
+    def attach(self, event_queue: _EventQueue, *, sim_start: datetime) -> None:
+        self._event_queue = event_queue
+        self._sim_start = dt_util.as_utc(sim_start)
+        for timer in sorted(self._timers.values(), key=lambda item: (item.when, item.timer_id)):
+            self._enqueue(timer)
+
+    def fire(self, timer_id: int) -> None:
+        timer = self._timers.pop(timer_id, None)
+        if timer is None or timer.cancelled:
+            return
+        result = timer.action(timer.when)
+        if asyncio.iscoroutine(result):
+            timer.hass.async_create_task(result)
+
+    def _enqueue(self, timer: _ScheduledTimer) -> None:
+        if self._event_queue is None or self._sim_start is None or timer.cancelled:
+            return
+        fire_time_s = max(0.0, (timer.when - self._sim_start).total_seconds())
+        self._event_queue.push(
+            time_s=fire_time_s,
+            priority=_EVENT_PRIORITY_HA_TIMER,
+            event_type="scheduled_callback",
+            payload={"timer_id": timer.timer_id},
+        )
+
+
 # ---------------------------------------------------------------------------
 # Snapshot
 # ---------------------------------------------------------------------------
-
-def _collect_timer_boundaries_within_step(
-    hass: HomeAssistant,
-    *,
-    step_start: datetime,
-    step_end: datetime,
-) -> list[datetime]:
-    """Return pending timer boundaries that fall strictly inside this step."""
-    try:
-        loop_now = hass.loop.time()
-        step_start_utc = dt_util.as_utc(step_start)
-        step_end_utc = dt_util.as_utc(step_end)
-        boundaries: dict[float, datetime] = {}
-
-        for handle in list(get_scheduled_timer_handles(hass.loop)):
-            if not isinstance(handle, asyncio.TimerHandle) or handle.cancelled():
-                continue
-
-            future_seconds = handle.when() - (loop_now + _MONOTONIC_RESOLUTION)
-            if future_seconds <= 0.0:
-                continue
-
-            boundary = step_start_utc + timedelta(seconds=future_seconds)
-            boundary_ts = boundary.timestamp()
-            if step_start_utc.timestamp() < boundary_ts < step_end_utc.timestamp():
-                boundaries[boundary_ts] = boundary
-
-        return [boundaries[key] for key in sorted(boundaries)]
-    except Exception as err:
-        _LOG.warning(
-            "Falling back to coarse step timing; could not inspect pending timers: %s",
-            err,
-        )
-        return []
 
 def _capture_snapshot(
     hass: HomeAssistant,
@@ -456,6 +498,7 @@ async def run_simulation(
     advance_clock: Callable[[float], None],
     wall_clock_timeout_s: float = _DEFAULT_WALL_CLOCK_TIMEOUT_S,
     on_record: "Callable[[dict[str, Any]], None] | None" = None,
+    timer_scheduler: SimTimerScheduler | None = None,
 ) -> list[dict[str, Any]]:
     """Run the simulation loop and return a list of timestamped snapshot records.
 
@@ -573,6 +616,8 @@ async def run_simulation(
     event_queue = _EventQueue()
     sim_time_s = 0.0
     step_contexts: dict[int, dict[str, Any]] = {}
+    if timer_scheduler is not None:
+        timer_scheduler.attach(event_queue, sim_start=sim_start)
 
     for at_s, target_temp in schedule:
         if 0.0 <= at_s <= total_s:
@@ -630,7 +675,6 @@ async def run_simulation(
 
             elapsed_s_start = step * dt_s
             elapsed_s_end = elapsed_s_start + dt_s
-            step_start_time = sim_start + timedelta(seconds=elapsed_s_start)
             step_end_time = sim_start + timedelta(seconds=elapsed_s_end)
 
             if ext_profile.enabled:
@@ -652,22 +696,6 @@ async def run_simulation(
                 "switch_state_after_tick": None,
                 "should_record": step % record_every_steps == 0,
             }
-
-            for boundary in _collect_timer_boundaries_within_step(
-                hass,
-                step_start=step_start_time,
-                step_end=step_end_time,
-            ):
-                boundary_elapsed_s = max(
-                    0.0,
-                    (dt_util.as_utc(boundary) - dt_util.as_utc(step_start_time)).total_seconds(),
-                )
-                event_queue.push(
-                    time_s=elapsed_s_start + boundary_elapsed_s,
-                    priority=_EVENT_PRIORITY_HA_TIMER,
-                    event_type="ha_timer_callback",
-                    payload={"when": boundary},
-                )
 
             event_queue.push(
                 time_s=elapsed_s_end,
@@ -703,11 +731,6 @@ async def run_simulation(
             await asyncio.wait_for(hass.async_block_till_done(), timeout=30.0)
             continue
 
-        if event.event_type == "ha_timer_callback":
-            async_fire_time_changed(hass, event.payload["when"])
-            await asyncio.wait_for(hass.async_block_till_done(), timeout=30.0)
-            continue
-
         if event.event_type == "step_tick":
             step = int(event.payload["step"])
             ctx = step_contexts[step]
@@ -718,6 +741,13 @@ async def run_simulation(
             prev_power = ctx["switch_state_after_tick"]
             if not ctx["should_record"]:
                 step_contexts.pop(step, None)
+            continue
+
+        if event.event_type == "scheduled_callback":
+            if timer_scheduler is None:
+                raise RuntimeError("Scheduled callback event fired without a timer scheduler")
+            timer_scheduler.fire(int(event.payload["timer_id"]))
+            await asyncio.wait_for(hass.async_block_till_done(), timeout=30.0)
             continue
 
         if event.event_type == "record_snapshot":
