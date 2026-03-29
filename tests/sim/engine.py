@@ -50,7 +50,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.util import dt as dt_util
 from pytest_homeassistant_custom_component.common import async_fire_time_changed
 
-from .virtual_entities import inject_temperature, read_number_power, read_switch_power
+from .virtual_entities import inject_temperature, read_number_power, read_switch_debug, read_switch_power
 
 import sys as _sys
 from pathlib import Path as _Path
@@ -79,6 +79,11 @@ def _capture_snapshot(
     model: Any,
     elapsed_s: float,
     sensor_temperature: float | None = None,
+    *,
+    heater_entity_id: str | None = None,
+    power_prev_step_applied: float | None = None,
+    switch_state_before_tick: float | None = None,
+    switch_state_after_tick: float | None = None,
 ) -> dict[str, Any]:
     """Build a record from current HA climate state + thermal model state."""
     state = hass.states.get(climate_entity_id)
@@ -99,10 +104,21 @@ def _capture_snapshot(
     smart_pi = specific.get("smart_pi", {}) if isinstance(specific, dict) else {}
     if not isinstance(smart_pi, dict):
         smart_pi = {}
+    control_debug = specific.get("control_debug", {}) if isinstance(specific, dict) else {}
+    if not isinstance(control_debug, dict):
+        control_debug = {}
+    cycle_debug = specific.get("cycle_debug", {}) if isinstance(specific, dict) else {}
+    if not isinstance(cycle_debug, dict):
+        cycle_debug = {}
+    switch_debug = read_switch_debug(hass, heater_entity_id) if heater_entity_id else {}
 
     return {
         "elapsed_s": elapsed_s,
         "elapsed_h": elapsed_s / 3600.0,
+        # Timing split for actuator/physics debugging
+        "power_prev_step_applied": power_prev_step_applied,
+        "switch_state_before_tick": switch_state_before_tick,
+        "switch_state_after_tick": switch_state_after_tick,
         # Physics ground truth
         "model_temperature": model.temperature,
         "sensor_temperature": sensor_temperature,   # degraded — what VTherm saw
@@ -129,11 +145,112 @@ def _capture_snapshot(
         "smartpi_u_ff": smart_pi.get("u_ff"),
         "smartpi_u_pi": smart_pi.get("u_pi"),
         "smartpi_u_cmd": smart_pi.get("u_cmd"),
+        "smartpi_u_applied": smart_pi.get("u_applied"),
+        "smartpi_committed_on_percent": smart_pi.get("committed_on_percent"),
         "smartpi_learn_progress_percent": smart_pi.get("learn_progress_percent"),
         "smartpi_near_band_below_deg": smart_pi.get("near_band_below_deg"),
         "smartpi_near_band_above_deg": smart_pi.get("near_band_above_deg"),
+        "smartpi_in_deadband": smart_pi.get("in_deadband"),
+        "smartpi_in_near_band": smart_pi.get("in_near_band"),
+        "smartpi_tau_reliable": smart_pi.get("tau_reliable"),
         "deadtime_heat_s": smart_pi.get("deadtime_heat_s"),
         "deadtime_cool_s": smart_pi.get("deadtime_cool_s"),
+        "vt_on_time_sec": (attrs.get("vtherm_over_switch") or {}).get("on_time_sec")
+            if isinstance(attrs.get("vtherm_over_switch"), dict) else None,
+        "vt_off_time_sec": (attrs.get("vtherm_over_switch") or {}).get("off_time_sec")
+            if isinstance(attrs.get("vtherm_over_switch"), dict) else None,
+        "cycle_debug_cycle_start_iso": cycle_debug.get("cycle_start_iso"),
+        "cycle_debug_cycle_duration_sec": cycle_debug.get("cycle_duration_sec"),
+        "cycle_debug_cycle_elapsed_sec": cycle_debug.get("cycle_elapsed_sec"),
+        "cycle_debug_last_on_time_sec": cycle_debug.get("last_on_time_sec"),
+        "cycle_debug_last_off_time_sec": cycle_debug.get("last_off_time_sec"),
+        "cycle_debug_last_realized_on_percent": cycle_debug.get("last_realized_on_percent"),
+        "cycle_debug_last_tick_is_initial": cycle_debug.get("last_tick_is_initial"),
+        "cycle_debug_last_tick_current_t": cycle_debug.get("last_tick_current_t"),
+        "cycle_debug_last_tick_next_global_tick": cycle_debug.get("last_tick_next_global_tick"),
+        "cycle_debug_is_within_pwm_on_window": cycle_debug.get("is_within_pwm_on_window"),
+        "cycle_debug_last_cycle_restart_reason": cycle_debug.get("last_cycle_restart_reason"),
+        "cycle_debug_restart_count": cycle_debug.get("restart_count"),
+        "cycle_debug_last_restart_source": cycle_debug.get("last_restart_source"),
+        "cycle_debug_restart_count_temp_sensor": (
+            (cycle_debug.get("restart_count_by_source") or {}).get("temp_sensor")
+            if isinstance(cycle_debug.get("restart_count_by_source"), dict) else None
+        ),
+        "cycle_debug_restart_count_ext_temp_sensor": (
+            (cycle_debug.get("restart_count_by_source") or {}).get("ext_temp_sensor")
+            if isinstance(cycle_debug.get("restart_count_by_source"), dict) else None
+        ),
+        "cycle_debug_restart_count_cycle_timer": (
+            (cycle_debug.get("restart_count_by_source") or {}).get("cycle_timer")
+            if isinstance(cycle_debug.get("restart_count_by_source"), dict) else None
+        ),
+        "cycle_debug_restart_count_smartpi_heartbeat": (
+            (cycle_debug.get("restart_count_by_source") or {}).get("smartpi_heartbeat")
+            if isinstance(cycle_debug.get("restart_count_by_source"), dict) else None
+        ),
+        "cycle_debug_restart_count_direct": (
+            (cycle_debug.get("restart_count_by_source") or {}).get("direct")
+            if isinstance(cycle_debug.get("restart_count_by_source"), dict) else None
+        ),
+        "cycle_debug_restart_count_by_source": dict(cycle_debug.get("restart_count_by_source", {}))
+            if isinstance(cycle_debug.get("restart_count_by_source"), dict) else {},
+        "cycle_debug_suppressed_restart_count": cycle_debug.get("suppressed_restart_count"),
+        "cycle_debug_last_suppressed_restart_source": cycle_debug.get("last_suppressed_restart_source"),
+        "cycle_debug_suppressed_restart_count_temp_sensor": (
+            (cycle_debug.get("suppressed_restart_count_by_source") or {}).get("temp_sensor")
+            if isinstance(cycle_debug.get("suppressed_restart_count_by_source"), dict) else None
+        ),
+        "cycle_debug_suppressed_restart_count_ext_temp_sensor": (
+            (cycle_debug.get("suppressed_restart_count_by_source") or {}).get("ext_temp_sensor")
+            if isinstance(cycle_debug.get("suppressed_restart_count_by_source"), dict) else None
+        ),
+        "cycle_debug_suppressed_restart_count_cycle_timer": (
+            (cycle_debug.get("suppressed_restart_count_by_source") or {}).get("cycle_timer")
+            if isinstance(cycle_debug.get("suppressed_restart_count_by_source"), dict) else None
+        ),
+        "cycle_debug_suppressed_restart_count_smartpi_heartbeat": (
+            (cycle_debug.get("suppressed_restart_count_by_source") or {}).get("smartpi_heartbeat")
+            if isinstance(cycle_debug.get("suppressed_restart_count_by_source"), dict) else None
+        ),
+        "cycle_debug_suppressed_restart_count_direct": (
+            (cycle_debug.get("suppressed_restart_count_by_source") or {}).get("direct")
+            if isinstance(cycle_debug.get("suppressed_restart_count_by_source"), dict) else None
+        ),
+        "cycle_debug_suppressed_restart_count_by_source": dict(cycle_debug.get("suppressed_restart_count_by_source", {}))
+            if isinstance(cycle_debug.get("suppressed_restart_count_by_source"), dict) else {},
+        "switch_debug_last_command": switch_debug.get("last_command"),
+        "switch_debug_last_command_iso": switch_debug.get("last_command_iso"),
+        "switch_debug_last_state": switch_debug.get("last_state"),
+        "switch_debug_command_count": switch_debug.get("command_count"),
+        "switch_debug_turn_on_count": switch_debug.get("turn_on_count"),
+        "switch_debug_turn_off_count": switch_debug.get("turn_off_count"),
+        # Harness-only instrumentation for duplicate control-path analysis
+        "control_debug_total_calls": control_debug.get("total_calls"),
+        "control_debug_same_timestamp_calls": control_debug.get("same_timestamp_calls"),
+        "control_debug_max_same_timestamp_calls": control_debug.get("max_same_timestamp_calls"),
+        "control_debug_last_source": control_debug.get("last_source"),
+        "control_debug_calls_temp_sensor": (
+            (control_debug.get("calls_by_source") or {}).get("temp_sensor")
+            if isinstance(control_debug.get("calls_by_source"), dict) else None
+        ),
+        "control_debug_calls_ext_temp_sensor": (
+            (control_debug.get("calls_by_source") or {}).get("ext_temp_sensor")
+            if isinstance(control_debug.get("calls_by_source"), dict) else None
+        ),
+        "control_debug_calls_cycle_timer": (
+            (control_debug.get("calls_by_source") or {}).get("cycle_timer")
+            if isinstance(control_debug.get("calls_by_source"), dict) else None
+        ),
+        "control_debug_calls_smartpi_heartbeat": (
+            (control_debug.get("calls_by_source") or {}).get("smartpi_heartbeat")
+            if isinstance(control_debug.get("calls_by_source"), dict) else None
+        ),
+        "control_debug_calls_direct": (
+            (control_debug.get("calls_by_source") or {}).get("direct")
+            if isinstance(control_debug.get("calls_by_source"), dict) else None
+        ),
+        "control_debug_calls_by_source": dict(control_debug.get("calls_by_source", {}))
+            if isinstance(control_debug.get("calls_by_source"), dict) else {},
         # Model direct physical quantities
         **{
             "model_effective_heater_power_w": getattr(model, "effective_heater_power", None),
@@ -401,40 +518,50 @@ async def run_simulation(
 
         # Physics: advance thermal model by dt_s using the previously read
         # heater command.  The model now represents state at elapsed_s_end.
-        model.set_power_fraction(prev_power)
+        applied_power_this_step = prev_power
+        model.set_power_fraction(applied_power_this_step)
         model.step(dt_s)
 
         # Apply the sensor pipeline — VTherm sees the degraded temperature,
         # not the raw physics ground truth.
         sensor_temp = pipeline.step(model.temperature, dt_s, elapsed_s_end)
 
-        # Inject new temperatures — these are queued as HA state changes and
-        # will be processed inside the async_block_till_done below.
+        # Advance simulated monotonic/wall-clock before publishing sensors so
+        # sensor-driven control paths observe the new step timestamp.
+        advance_clock(dt_s)
+
+        # Inject new temperatures and drain them separately from time-driven
+        # callbacks. This avoids collapsing sensor publication, scheduler
+        # timers, and resulting control work into one synthetic transaction.
         inject_temperature(hass, temp_sensor_id, sensor_temp)
         inject_temperature(
             hass, ext_sensor_id, model.external_temperature,
             friendly_name="External Temperature",
         )
-
-        # Advance simulated monotonic/wall-clock so callbacks observe the new "now".
-        advance_clock(dt_s)
+        await asyncio.wait_for(hass.async_block_till_done(), timeout=30.0)
 
         # Advance HA simulation time. This fires:
         #   • async_track_time_interval callbacks (VT main control, every cycle_min)
         #   • async_call_later callbacks (CycleScheduler ON→OFF transitions)
-        #   • state_changed event for the injected temperature above
+        # Sensor state changes were already drained above.
+        switch_state_before_tick = _read_power()
         current_time = sim_start + timedelta(seconds=elapsed_s_end)
         async_fire_time_changed(hass, current_time)
         await asyncio.wait_for(hass.async_block_till_done(), timeout=30.0)
 
         # Read heater command for the NEXT physics step.
-        prev_power = _read_power()
+        switch_state_after_tick = _read_power()
+        prev_power = switch_state_after_tick
 
         # Record snapshot.
         if step % record_every_steps == 0:
             snap = _capture_snapshot(
                 hass, climate_entity_id, model, elapsed_s_end,
                 sensor_temperature=sensor_temp,
+                heater_entity_id=heater_entity_id,
+                power_prev_step_applied=applied_power_this_step,
+                switch_state_before_tick=switch_state_before_tick,
+                switch_state_after_tick=switch_state_after_tick,
             )
             # Record the actual switch/valve state just commanded, so the plot
             # shows what the thermal model will receive next step — not just VT's

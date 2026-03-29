@@ -36,6 +36,7 @@ Usage pattern
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any
 
 from homeassistant.const import ATTR_ENTITY_ID
@@ -64,6 +65,8 @@ _NUMBER_ATTRS: dict[str, Any] = {
     "friendly_name": "VT Sim Valve Position",
 }
 
+_VIRTUAL_SWITCH_DEBUG_KEY = "vtsim_virtual_switch_debug"
+
 
 # ---------------------------------------------------------------------------
 # Internal helpers
@@ -81,6 +84,41 @@ def _extract_entity_ids(call: ServiceCall) -> list[str]:
     if ids is None:
         return []
     return [ids] if isinstance(ids, str) else list(ids)
+
+
+def _ensure_switch_debug(hass: HomeAssistant, entity_id: str) -> dict[str, Any]:
+    store = hass.data.setdefault(_VIRTUAL_SWITCH_DEBUG_KEY, {})
+    debug = store.get(entity_id)
+    if not isinstance(debug, dict):
+        debug = {
+            "last_command": None,
+            "last_command_iso": None,
+            "last_state": None,
+            "command_count": 0,
+            "turn_on_count": 0,
+            "turn_off_count": 0,
+        }
+        store[entity_id] = debug
+    return debug
+
+
+def _record_switch_command(
+    hass: HomeAssistant,
+    entity_id: str,
+    *,
+    command: str,
+    resulting_state: str,
+) -> None:
+    debug = _ensure_switch_debug(hass, entity_id)
+    now = datetime.now().astimezone()
+    debug["last_command"] = command
+    debug["last_command_iso"] = now.isoformat()
+    debug["last_state"] = resulting_state
+    debug["command_count"] = int(debug.get("command_count", 0)) + 1
+    if command == "turn_on":
+        debug["turn_on_count"] = int(debug.get("turn_on_count", 0)) + 1
+    elif command == "turn_off":
+        debug["turn_off_count"] = int(debug.get("turn_off_count", 0)) + 1
 
 
 # ---------------------------------------------------------------------------
@@ -104,14 +142,17 @@ async def async_setup_virtual_switch(
         initial_state: Initial switch state, ``"on"`` or ``"off"``.
     """
     hass.states.async_set(entity_id, initial_state, _SWITCH_ATTRS)
+    _ensure_switch_debug(hass, entity_id)["last_state"] = initial_state
 
     async def _turn_on(call: ServiceCall) -> None:
         for eid in _extract_entity_ids(call):
             hass.states.async_set(eid, "on", _SWITCH_ATTRS)
+            _record_switch_command(hass, eid, command="turn_on", resulting_state="on")
 
     async def _turn_off(call: ServiceCall) -> None:
         for eid in _extract_entity_ids(call):
             hass.states.async_set(eid, "off", _SWITCH_ATTRS)
+            _record_switch_command(hass, eid, command="turn_off", resulting_state="off")
 
     hass.services.async_register("switch", "turn_on", _turn_on)
     hass.services.async_register("switch", "turn_off", _turn_off)
@@ -203,3 +244,9 @@ def read_number_power(
         return max(0.0, min(1.0, float(state.state) / max_value))
     except (ValueError, TypeError):
         return 0.0
+
+
+def read_switch_debug(hass: HomeAssistant, entity_id: str) -> dict[str, Any]:
+    """Return harness-only debug info for a virtual switch."""
+    debug = hass.data.get(_VIRTUAL_SWITCH_DEBUG_KEY, {}).get(entity_id, {})
+    return dict(debug) if isinstance(debug, dict) else {}

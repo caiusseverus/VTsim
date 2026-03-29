@@ -158,6 +158,253 @@ def _prepare_custom_components(hass: HomeAssistant) -> None:
         shutil.copytree(src, dst, dirs_exist_ok=True)
 
 
+def _install_control_debug_instrumentation(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Instrument SmartPI control entrypoints from the harness only.
+
+    This keeps VTsim observational: no edits to the tested VTherm source tree.
+    Stats are attached to each thermostat instance and injected into
+    ``attributes.specific_states.control_debug`` by a wrapped
+    ``update_custom_attributes()`` call.
+    """
+    from custom_components.versatile_thermostat.base_thermostat import BaseThermostat
+    from custom_components.versatile_thermostat.prop_handler_smartpi import SmartPIHandler
+
+    def _ensure_debug_state(thermostat: Any) -> dict[str, Any]:
+        stats = getattr(thermostat, "_vtsim_control_debug_stats", None)
+        if not isinstance(stats, dict):
+            stats = {
+                "total_calls": 0,
+                "calls_by_source": {},
+                "last_source": None,
+                "last_iso": None,
+                "same_timestamp_calls": 0,
+                "max_same_timestamp_calls": 0,
+                "last_force": False,
+            }
+            setattr(thermostat, "_vtsim_control_debug_stats", stats)
+        if not hasattr(thermostat, "_vtsim_pending_control_debug_source"):
+            setattr(thermostat, "_vtsim_pending_control_debug_source", None)
+        if not hasattr(thermostat, "_vtsim_active_control_debug_source"):
+            setattr(thermostat, "_vtsim_active_control_debug_source", None)
+        return stats
+
+    def _set_source(thermostat: Any, source: str) -> None:
+        _ensure_debug_state(thermostat)
+        setattr(thermostat, "_vtsim_pending_control_debug_source", source)
+
+    def _consume_source(thermostat: Any, fallback: str) -> str:
+        _ensure_debug_state(thermostat)
+        source = getattr(thermostat, "_vtsim_pending_control_debug_source", None) or fallback
+        setattr(thermostat, "_vtsim_pending_control_debug_source", None)
+        return str(source)
+
+    def _record_entry(thermostat: Any, source: str, *, force: bool = False) -> None:
+        stats = _ensure_debug_state(thermostat)
+        now_iso = thermostat.now.isoformat()
+
+        stats["total_calls"] = int(stats.get("total_calls", 0)) + 1
+        by_source = stats.get("calls_by_source")
+        if not isinstance(by_source, dict):
+            by_source = {}
+            stats["calls_by_source"] = by_source
+        by_source[source] = int(by_source.get(source, 0)) + 1
+
+        if stats.get("last_iso") == now_iso:
+            same_ts_calls = int(stats.get("same_timestamp_calls", 0)) + 1
+        else:
+            same_ts_calls = 1
+
+        stats["same_timestamp_calls"] = same_ts_calls
+        stats["max_same_timestamp_calls"] = max(
+            int(stats.get("max_same_timestamp_calls", 0)),
+            same_ts_calls,
+        )
+        stats["last_iso"] = now_iso
+        stats["last_source"] = source
+        stats["last_force"] = bool(force)
+
+    orig_update_custom_attributes = BaseThermostat.update_custom_attributes
+
+    def _wrapped_update_custom_attributes(self: Any) -> None:
+        orig_update_custom_attributes(self)
+        stats = _ensure_debug_state(self)
+        specific = self._attr_extra_state_attributes.get("specific_states")
+        if isinstance(specific, dict):
+            specific["control_debug"] = {
+                "total_calls": stats["total_calls"],
+                "calls_by_source": dict(stats["calls_by_source"]),
+                "last_source": stats["last_source"],
+                "last_iso": stats["last_iso"],
+                "same_timestamp_calls": stats["same_timestamp_calls"],
+                "max_same_timestamp_calls": stats["max_same_timestamp_calls"],
+                "last_force": stats["last_force"],
+            }
+            cycle_debug = getattr(self, "_vtsim_cycle_debug", None)
+            if isinstance(cycle_debug, dict):
+                specific["cycle_debug"] = dict(cycle_debug)
+
+    monkeypatch.setattr(BaseThermostat, "update_custom_attributes", _wrapped_update_custom_attributes)
+
+    orig_async_control_heating = BaseThermostat.async_control_heating
+
+    async def _wrapped_async_control_heating(self: Any, timestamp=None, force=False):
+        if timestamp and getattr(self, "_vtsim_pending_control_debug_source", None) is None:
+            _set_source(self, "cycle_timer")
+        return await orig_async_control_heating(self, timestamp=timestamp, force=force)
+
+    monkeypatch.setattr(BaseThermostat, "async_control_heating", _wrapped_async_control_heating)
+
+    orig_temp_changed = BaseThermostat._async_temperature_changed
+
+    async def _wrapped_temp_changed(self: Any, event):
+        _set_source(self, "temp_sensor")
+        return await orig_temp_changed(self, event)
+
+    monkeypatch.setattr(BaseThermostat, "_async_temperature_changed", _wrapped_temp_changed)
+
+    orig_ext_temp_changed = BaseThermostat._async_ext_temperature_changed
+
+    async def _wrapped_ext_temp_changed(self: Any, event):
+        _set_source(self, "ext_temp_sensor")
+        return await orig_ext_temp_changed(self, event)
+
+    monkeypatch.setattr(BaseThermostat, "_async_ext_temperature_changed", _wrapped_ext_temp_changed)
+
+    orig_control_heating = SmartPIHandler.control_heating
+
+    async def _wrapped_control_heating(self: Any, timestamp=None, force=False):
+        thermostat = self._thermostat
+        source = _consume_source(thermostat, "direct")
+        setattr(thermostat, "_vtsim_active_control_debug_source", source)
+        _record_entry(thermostat, source, force=force)
+        try:
+            return await orig_control_heating(self, timestamp=timestamp, force=force)
+        finally:
+            setattr(thermostat, "_vtsim_active_control_debug_source", None)
+
+    monkeypatch.setattr(SmartPIHandler, "control_heating", _wrapped_control_heating)
+
+    orig_silent_heartbeat = SmartPIHandler._async_control_heating_silently
+
+    async def _wrapped_silent_heartbeat(self: Any):
+        _set_source(self._thermostat, "smartpi_heartbeat")
+        return await orig_silent_heartbeat(self)
+
+    monkeypatch.setattr(SmartPIHandler, "_async_control_heating_silently", _wrapped_silent_heartbeat)
+
+
+def _install_cycle_debug_instrumentation(
+    monkeypatch: pytest.MonkeyPatch,
+    clock: SimClock,
+) -> None:
+    """Instrument scheduler cycle phase from the harness only."""
+    try:
+        from custom_components.versatile_thermostat.cycle_scheduler import (
+            CycleScheduler,
+            calculate_cycle_times,
+        )
+    except ModuleNotFoundError:
+        return
+
+    def _ensure_cycle_debug(thermostat: Any) -> dict[str, Any]:
+        debug = getattr(thermostat, "_vtsim_cycle_debug", None)
+        if not isinstance(debug, dict):
+            debug = {
+                "cycle_start_iso": None,
+                "cycle_duration_sec": None,
+                "cycle_elapsed_sec": None,
+                "last_on_time_sec": None,
+                "last_off_time_sec": None,
+                "last_realized_on_percent": None,
+                "last_tick_is_initial": None,
+                "last_tick_current_t": None,
+                "last_tick_next_global_tick": None,
+                "is_within_pwm_on_window": None,
+                "last_cycle_restart_reason": None,
+                "restart_count": 0,
+                "restart_count_by_source": {},
+                "last_restart_source": None,
+                "suppressed_restart_count": 0,
+                "suppressed_restart_count_by_source": {},
+                "last_suppressed_restart_source": None,
+            }
+            setattr(thermostat, "_vtsim_cycle_debug", debug)
+        return debug
+
+    def _update_cycle_phase(scheduler: Any, *, is_initial: bool) -> None:
+        thermostat = scheduler._thermostat
+        debug = _ensure_cycle_debug(thermostat)
+        current_t = 0.0 if is_initial else max(0.0, clock.time() - float(scheduler._cycle_start_time or 0.0))
+        debug["cycle_elapsed_sec"] = current_t
+        debug["last_tick_is_initial"] = bool(is_initial)
+        debug["last_tick_current_t"] = current_t
+        if scheduler._cycle_duration_sec:
+            debug["cycle_duration_sec"] = float(scheduler._cycle_duration_sec)
+        on_time = scheduler._current_on_time_sec
+        debug["is_within_pwm_on_window"] = bool(on_time and current_t < float(on_time))
+
+    orig_start_cycle_switch = CycleScheduler._start_cycle_switch
+
+    async def _wrapped_start_cycle_switch(self: Any, hvac_mode: Any, on_time_sec: float, off_time_sec: float, on_percent: float):
+        thermostat = self._thermostat
+        debug = _ensure_cycle_debug(thermostat)
+        restart_source = (
+            getattr(thermostat, "_vtsim_active_control_debug_source", None)
+            or getattr(thermostat, "_vtsim_pending_control_debug_source", None)
+            or "direct"
+        )
+        by_source = debug.get("restart_count_by_source")
+        if not isinstance(by_source, dict):
+            by_source = {}
+            debug["restart_count_by_source"] = by_source
+        debug["restart_count"] = int(debug.get("restart_count", 0)) + 1
+        by_source[restart_source] = int(by_source.get(restart_source, 0)) + 1
+        debug["last_restart_source"] = str(restart_source)
+        debug["cycle_start_iso"] = clock.utcnow().isoformat()
+        debug["cycle_duration_sec"] = float(self._cycle_duration_sec)
+        debug["cycle_elapsed_sec"] = 0.0
+        debug["last_on_time_sec"] = float(on_time_sec)
+        debug["last_off_time_sec"] = float(off_time_sec)
+        debug["last_realized_on_percent"] = float(on_percent)
+        if hvac_mode is not None:
+            debug["last_hvac_mode"] = str(hvac_mode)
+        if hvac_mode is not None and str(hvac_mode).lower().endswith("off"):
+            debug["last_cycle_restart_reason"] = "hvac_off"
+        elif on_time_sec <= 0:
+            debug["last_cycle_restart_reason"] = "zero_on_time"
+        elif on_time_sec >= self._cycle_duration_sec:
+            debug["last_cycle_restart_reason"] = "full_on_cycle"
+        else:
+            debug["last_cycle_restart_reason"] = "pwm_cycle"
+        return await orig_start_cycle_switch(self, hvac_mode, on_time_sec, off_time_sec, on_percent)
+
+    monkeypatch.setattr(CycleScheduler, "_start_cycle_switch", _wrapped_start_cycle_switch)
+
+    orig_tick = CycleScheduler._tick
+
+    async def _wrapped_tick(self: Any, _now=None, _is_initial: bool = False):
+        _update_cycle_phase(self, is_initial=_is_initial)
+        result = await orig_tick(self, _now=_now, _is_initial=_is_initial)
+        debug = _ensure_cycle_debug(self._thermostat)
+        next_tick = None
+        if getattr(self, "_tick_unsub", None) is not None and self._cycle_start_time:
+            elapsed = max(0.0, clock.time() - float(self._cycle_start_time))
+            next_tick = max(0.0, float(self._cycle_duration_sec) - elapsed)
+        debug["last_tick_next_global_tick"] = next_tick
+        _update_cycle_phase(self, is_initial=False)
+        return result
+
+    monkeypatch.setattr(CycleScheduler, "_tick", _wrapped_tick)
+
+    orig_on_master_cycle_end = CycleScheduler._on_master_cycle_end
+
+    async def _wrapped_on_master_cycle_end(self: Any, _now):
+        _ensure_cycle_debug(self._thermostat)["last_cycle_restart_reason"] = "master_cycle_end"
+        return await orig_on_master_cycle_end(self, _now)
+
+    monkeypatch.setattr(CycleScheduler, "_on_master_cycle_end", _wrapped_on_master_cycle_end)
+
+
 # ---------------------------------------------------------------------------
 # VT config entry construction
 # ---------------------------------------------------------------------------
@@ -365,6 +612,7 @@ async def test_vt_scenario(
     _trace("prepare custom_components discovery")
     _prepare_custom_components(hass)
     hass.data.pop(DATA_CUSTOM_COMPONENTS, None)
+    _install_control_debug_instrumentation(monkeypatch)
 
     # Reset VT API singleton so stale hass from a prior test is not reused.
     VersatileThermostatAPI._hass = None
@@ -378,6 +626,7 @@ async def test_vt_scenario(
         "custom_components.versatile_thermostat.prop_algo_smartpi.time.monotonic",
         clock.monotonic,
     )
+    _install_cycle_debug_instrumentation(monkeypatch, clock)
 
     # ------------------------------------------------------------------
     # 5b. Patch CycleScheduler to use simulated time.
