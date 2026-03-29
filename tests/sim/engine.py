@@ -28,10 +28,12 @@ when async_fire_time_changed advances past their scheduled time.
 from __future__ import annotations
 
 import asyncio
+import heapq
 import logging
 import os
 import time as _time_module
 from collections.abc import Callable
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -68,6 +70,58 @@ from .sensor_pipeline import SensorPipeline  # noqa: E402
 
 _LOG = logging.getLogger(__name__)
 _MONOTONIC_RESOLUTION = 1e-9
+
+# Phase 1 keeps the historical single-sim loop semantics at equal timestamps:
+# finish the previous step first, then apply setpoint changes, then plan the
+# next physics interval.
+_EVENT_PRIORITY_SENSOR = 30
+_EVENT_PRIORITY_HA_TIMER = 40
+_EVENT_PRIORITY_SNAPSHOT = 50
+_EVENT_PRIORITY_SETPOINT = 60
+_EVENT_PRIORITY_PHYSICS = 70
+
+
+@dataclass(order=True, slots=True)
+class _SimEvent:
+    time_s: float
+    priority: int
+    sequence: int
+    event_type: str = field(compare=False)
+    payload: dict[str, Any] = field(default_factory=dict, compare=False)
+
+
+class _EventQueue:
+    """Small deterministic priority queue for simulation events."""
+
+    def __init__(self) -> None:
+        self._heap: list[_SimEvent] = []
+        self._sequence = 0
+
+    def push(
+        self,
+        *,
+        time_s: float,
+        priority: int,
+        event_type: str,
+        payload: dict[str, Any] | None = None,
+    ) -> None:
+        heapq.heappush(
+            self._heap,
+            _SimEvent(
+                time_s=time_s,
+                priority=priority,
+                sequence=self._sequence,
+                event_type=event_type,
+                payload=payload or {},
+            ),
+        )
+        self._sequence += 1
+
+    def pop(self) -> _SimEvent:
+        return heapq.heappop(self._heap)
+
+    def __bool__(self) -> bool:
+        return bool(self._heap)
 
 
 # ---------------------------------------------------------------------------
@@ -454,8 +508,6 @@ async def run_simulation(
         for item in (sim_cfg.get("schedule") or [])
         if isinstance(item, dict) and "at_hour" in item and "target_temp" in item
     )
-    sched_idx = 0
-
     # -----------------------------------------------------------------------
     # Initial thermostat state
     # -----------------------------------------------------------------------
@@ -511,127 +563,190 @@ async def run_simulation(
     prev_power: float = _read_power()
 
     # -----------------------------------------------------------------------
-    # Main loop
+    # Event-driven loop
     # -----------------------------------------------------------------------
     records: list[dict[str, Any]] = []
     show_progress = os.getenv("VTSIM_PROGRESS", "").strip() not in ("", "0", "false", "False")
     last_progress_minute: int = -1
     wall_start = _REAL_MONOTONIC()
     _TIMEOUT_CHECK_INTERVAL = 1000  # check wall clock every N steps
+    event_queue = _EventQueue()
+    sim_time_s = 0.0
+    step_contexts: dict[int, dict[str, Any]] = {}
+
+    for at_s, target_temp in schedule:
+        if 0.0 <= at_s <= total_s:
+            event_queue.push(
+                time_s=at_s,
+                priority=_EVENT_PRIORITY_SETPOINT,
+                event_type="setpoint_change",
+                payload={"target_temp": target_temp},
+            )
 
     for step in range(total_steps):
-        if step > 0 and step % _TIMEOUT_CHECK_INTERVAL == 0:
-            elapsed_wall = _REAL_MONOTONIC() - wall_start
-            if elapsed_wall > wall_clock_timeout_s:
-                raise TimeoutError(
-                    f"Simulation wall-clock timeout after {elapsed_wall:.0f}s "
-                    f"at simulated step {step}/{total_steps} "
-                    f"({step * dt_s / 3600:.1f}h of {duration_h}h)"
-                )
-        elapsed_s_start = step * dt_s
-        elapsed_s_end = elapsed_s_start + dt_s
+        event_queue.push(
+            time_s=step * dt_s,
+            priority=_EVENT_PRIORITY_PHYSICS,
+            event_type="physics_step",
+            payload={"step": step},
+        )
 
-        # Apply any setpoint changes due at the start of this step.
-        while sched_idx < len(schedule) and elapsed_s_start >= schedule[sched_idx][0]:
-            target_temp = schedule[sched_idx][1]
+    while event_queue:
+        event = event_queue.pop()
+
+        if event.time_s > total_s + _MONOTONIC_RESOLUTION:
+            continue
+
+        if event.time_s + _MONOTONIC_RESOLUTION < sim_time_s:
+            raise RuntimeError(
+                f"Simulation event moved backwards in time: now={sim_time_s}, event={event.time_s}"
+            )
+
+        delta_s = max(0.0, event.time_s - sim_time_s)
+        if delta_s > 0.0:
+            advance_clock(delta_s)
+            sim_time_s = event.time_s
+
+        if event.event_type == "setpoint_change":
             await hass.services.async_call(
                 "climate",
                 "set_temperature",
-                {"entity_id": climate_entity_id, "temperature": target_temp},
+                {"entity_id": climate_entity_id, "temperature": event.payload["target_temp"]},
                 blocking=True,
             )
             await asyncio.wait_for(hass.async_block_till_done(), timeout=30.0)
-            sched_idx += 1
+            continue
 
-        # Apply disturbances to model attributes BEFORE stepping the physics.
-        # This matches the coordinator tick order in heating_simulator/__init__.py
-        # (disturbances set on model, then model.step() consumes them).
-        if ext_profile.enabled:
-            model.set_external_temperature(ext_profile.temperature_at(elapsed_s_start))
-        model.internal_gain_watts = occupancy.gain_at(elapsed_s_start)
-        model.weather_k_multiplier = weather.multiplier
+        if event.event_type == "physics_step":
+            step = int(event.payload["step"])
+            if step > 0 and step % _TIMEOUT_CHECK_INTERVAL == 0:
+                elapsed_wall = _REAL_MONOTONIC() - wall_start
+                if elapsed_wall > wall_clock_timeout_s:
+                    raise TimeoutError(
+                        f"Simulation wall-clock timeout after {elapsed_wall:.0f}s "
+                        f"at simulated step {step}/{total_steps} "
+                        f"({step * dt_s / 3600:.1f}h of {duration_h}h)"
+                    )
 
-        # Physics: advance thermal model by dt_s using the previously read
-        # heater command.  The model now represents state at elapsed_s_end.
-        applied_power_this_step = prev_power
-        model.set_power_fraction(applied_power_this_step)
-        model.step(dt_s)
+            elapsed_s_start = step * dt_s
+            elapsed_s_end = elapsed_s_start + dt_s
+            step_start_time = sim_start + timedelta(seconds=elapsed_s_start)
+            step_end_time = sim_start + timedelta(seconds=elapsed_s_end)
 
-        # Apply the sensor pipeline — VTherm sees the degraded temperature,
-        # not the raw physics ground truth.
-        sensor_temp = pipeline.step(model.temperature, dt_s, elapsed_s_end)
+            if ext_profile.enabled:
+                model.set_external_temperature(ext_profile.temperature_at(elapsed_s_start))
+            model.internal_gain_watts = occupancy.gain_at(elapsed_s_start)
+            model.weather_k_multiplier = weather.multiplier
 
-        step_start_time = sim_start + timedelta(seconds=elapsed_s_start)
-        step_end_time = sim_start + timedelta(seconds=elapsed_s_end)
+            applied_power_this_step = prev_power
+            model.set_power_fraction(applied_power_this_step)
+            model.step(dt_s)
+            sensor_temp = pipeline.step(model.temperature, dt_s, elapsed_s_end)
 
-        # Fire pending time-based callbacks that fall strictly inside this
-        # outer step at their own simulated timestamps.
-        elapsed_fired_s = 0.0
-        for boundary in _collect_timer_boundaries_within_step(
-            hass,
-            step_start=step_start_time,
-            step_end=step_end_time,
-        ):
-            boundary_elapsed_s = max(
-                0.0,
-                (dt_util.as_utc(boundary) - dt_util.as_utc(step_start_time)).total_seconds(),
+            step_contexts[step] = {
+                "elapsed_s_end": elapsed_s_end,
+                "step_end_time": step_end_time,
+                "sensor_temperature": sensor_temp,
+                "power_prev_step_applied": applied_power_this_step,
+                "switch_state_before_tick": None,
+                "switch_state_after_tick": None,
+                "should_record": step % record_every_steps == 0,
+            }
+
+            for boundary in _collect_timer_boundaries_within_step(
+                hass,
+                step_start=step_start_time,
+                step_end=step_end_time,
+            ):
+                boundary_elapsed_s = max(
+                    0.0,
+                    (dt_util.as_utc(boundary) - dt_util.as_utc(step_start_time)).total_seconds(),
+                )
+                event_queue.push(
+                    time_s=elapsed_s_start + boundary_elapsed_s,
+                    priority=_EVENT_PRIORITY_HA_TIMER,
+                    event_type="ha_timer_callback",
+                    payload={"when": boundary},
+                )
+
+            event_queue.push(
+                time_s=elapsed_s_end,
+                priority=_EVENT_PRIORITY_SENSOR,
+                event_type="sensor_publish",
+                payload={"step": step},
             )
-            advance_clock(boundary_elapsed_s - elapsed_fired_s)
-            elapsed_fired_s = boundary_elapsed_s
-            async_fire_time_changed(hass, boundary)
+            event_queue.push(
+                time_s=elapsed_s_end,
+                priority=_EVENT_PRIORITY_HA_TIMER,
+                event_type="step_tick",
+                payload={"step": step},
+            )
+            if step_contexts[step]["should_record"]:
+                event_queue.push(
+                    time_s=elapsed_s_end,
+                    priority=_EVENT_PRIORITY_SNAPSHOT,
+                    event_type="record_snapshot",
+                    payload={"step": step},
+                )
+            continue
+
+        if event.event_type == "sensor_publish":
+            step = int(event.payload["step"])
+            ctx = step_contexts[step]
+            inject_temperature(hass, temp_sensor_id, ctx["sensor_temperature"])
+            inject_temperature(
+                hass,
+                ext_sensor_id,
+                model.external_temperature,
+                friendly_name="External Temperature",
+            )
             await asyncio.wait_for(hass.async_block_till_done(), timeout=30.0)
+            continue
 
-        # Advance simulated monotonic/wall-clock to the step end before
-        # publishing sensors so sensor-driven control paths observe the new
-        # step timestamp.
-        advance_clock(dt_s - elapsed_fired_s)
+        if event.event_type == "ha_timer_callback":
+            async_fire_time_changed(hass, event.payload["when"])
+            await asyncio.wait_for(hass.async_block_till_done(), timeout=30.0)
+            continue
 
-        # Inject new temperatures and drain them separately from time-driven
-        # callbacks. This avoids collapsing sensor publication, scheduler
-        # timers, and resulting control work into one synthetic transaction.
-        inject_temperature(hass, temp_sensor_id, sensor_temp)
-        inject_temperature(
-            hass, ext_sensor_id, model.external_temperature,
-            friendly_name="External Temperature",
-        )
-        await asyncio.wait_for(hass.async_block_till_done(), timeout=30.0)
+        if event.event_type == "step_tick":
+            step = int(event.payload["step"])
+            ctx = step_contexts[step]
+            ctx["switch_state_before_tick"] = _read_power()
+            async_fire_time_changed(hass, ctx["step_end_time"])
+            await asyncio.wait_for(hass.async_block_till_done(), timeout=30.0)
+            ctx["switch_state_after_tick"] = _read_power()
+            prev_power = ctx["switch_state_after_tick"]
+            if not ctx["should_record"]:
+                step_contexts.pop(step, None)
+            continue
 
-        # Advance HA simulation time. This fires:
-        #   • async_track_time_interval callbacks (VT main control, every cycle_min)
-        #   • async_call_later callbacks (CycleScheduler ON→OFF transitions)
-        # Sensor state changes were already drained above.
-        switch_state_before_tick = _read_power()
-        async_fire_time_changed(hass, step_end_time)
-        await asyncio.wait_for(hass.async_block_till_done(), timeout=30.0)
-
-        # Read heater command for the NEXT physics step.
-        switch_state_after_tick = _read_power()
-        prev_power = switch_state_after_tick
-
-        # Record snapshot.
-        if step % record_every_steps == 0:
+        if event.event_type == "record_snapshot":
+            step = int(event.payload["step"])
+            ctx = step_contexts.pop(step)
             snap = _capture_snapshot(
-                hass, climate_entity_id, model, elapsed_s_end,
-                sensor_temperature=sensor_temp,
+                hass,
+                climate_entity_id,
+                model,
+                ctx["elapsed_s_end"],
+                sensor_temperature=ctx["sensor_temperature"],
                 heater_entity_id=heater_entity_id,
-                power_prev_step_applied=applied_power_this_step,
-                switch_state_before_tick=switch_state_before_tick,
-                switch_state_after_tick=switch_state_after_tick,
+                power_prev_step_applied=ctx["power_prev_step_applied"],
+                switch_state_before_tick=ctx["switch_state_before_tick"],
+                switch_state_after_tick=ctx["switch_state_after_tick"],
             )
-            # Record the actual switch/valve state just commanded, so the plot
-            # shows what the thermal model will receive next step — not just VT's
-            # planned duty cycle (power_percent), which stays constant for the
-            # whole 15-min cycle even while the switch is in its OFF portion.
             snap["switch_state"] = prev_power
             records.append(snap)
             if on_record is not None:
                 on_record(snap)
 
             if show_progress:
-                elapsed_minute = int(elapsed_s_end // 60)
+                elapsed_minute = int(ctx["elapsed_s_end"] // 60)
                 if elapsed_minute != last_progress_minute:
                     last_progress_minute = elapsed_minute
-                    _print_progress(step + 1, total_steps, elapsed_s_end, snap)
+                    _print_progress(step + 1, total_steps, ctx["elapsed_s_end"], snap)
+            continue
+
+        raise RuntimeError(f"Unsupported simulation event: {event.event_type}")
 
     if show_progress:
         print()  # end the progress line

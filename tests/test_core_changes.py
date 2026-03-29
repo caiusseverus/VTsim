@@ -47,7 +47,7 @@ def test_empty_metrics_includes_deadtime_heat_s():
 
 
 import inspect
-from sim.engine import run_simulation
+from sim.engine import _EventQueue, run_simulation
 
 
 def test_run_simulation_accepts_on_record_parameter():
@@ -56,6 +56,22 @@ def test_run_simulation_accepts_on_record_parameter():
     assert "on_record" in sig.parameters
     param = sig.parameters["on_record"]
     assert param.default is None
+
+
+def test_event_queue_orders_by_time_then_priority_then_sequence():
+    queue = _EventQueue()
+    queue.push(time_s=10.0, priority=40, event_type="later-inserted")
+    queue.push(time_s=10.0, priority=40, event_type="latest")
+    queue.push(time_s=5.0, priority=70, event_type="earliest-time")
+    queue.push(time_s=10.0, priority=30, event_type="higher-priority")
+
+    ordered = [queue.pop().event_type for _ in range(4)]
+    assert ordered == [
+        "earliest-time",
+        "higher-priority",
+        "later-inserted",
+        "latest",
+    ]
 
 
 from pathlib import Path
