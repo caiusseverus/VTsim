@@ -87,6 +87,7 @@ class _SimEvent:
     priority: int
     sequence: int
     event_type: str = field(compare=False)
+    sim_id: str = field(compare=False, default="default")
     payload: dict[str, Any] = field(default_factory=dict, compare=False)
 
 
@@ -102,6 +103,7 @@ class _EventQueue:
         *,
         time_s: float,
         priority: int,
+        sim_id: str = "default",
         event_type: str,
         payload: dict[str, Any] | None = None,
     ) -> None:
@@ -111,6 +113,7 @@ class _EventQueue:
                 time_s=time_s,
                 priority=priority,
                 sequence=self._sequence,
+                sim_id=sim_id,
                 event_type=event_type,
                 payload=payload or {},
             ),
@@ -154,6 +157,7 @@ class SimTimerScheduler:
         self._next_interval_id = 0
         self._event_queue: _EventQueue | None = None
         self._sim_start: datetime | None = None
+        self._sim_id = "default"
 
     def schedule(
         self,
@@ -208,9 +212,16 @@ class SimTimerScheduler:
 
         return _cancel
 
-    def attach(self, event_queue: _EventQueue, *, sim_start: datetime) -> None:
+    def attach(
+        self,
+        event_queue: _EventQueue,
+        *,
+        sim_start: datetime,
+        sim_id: str = "default",
+    ) -> None:
         self._event_queue = event_queue
         self._sim_start = dt_util.as_utc(sim_start)
+        self._sim_id = sim_id
         for timer in sorted(self._timers.values(), key=lambda item: (item.when, item.timer_id)):
             self._enqueue(timer)
 
@@ -280,8 +291,9 @@ class SimTimerScheduler:
         self._event_queue.push(
             time_s=fire_time_s,
             priority=_EVENT_PRIORITY_HA_TIMER,
+            sim_id=getattr(self, "_sim_id", "default"),
             event_type="scheduled_callback",
-            payload={"timer_id": timer.timer_id},
+            payload={"timer_id": timer.timer_id, "scheduler": self},
         )
 
 
@@ -570,49 +582,50 @@ def _print_progress(
 # Public API
 # ---------------------------------------------------------------------------
 
-async def run_simulation(
-    hass: HomeAssistant,
-    *,
-    model: Any,
-    control_mode: str,
-    heater_entity_id: str,
-    temp_sensor_id: str,
-    ext_sensor_id: str,
-    climate_entity_id: str,
-    scenario: dict[str, Any],
-    advance_clock: Callable[[float], None],
-    wall_clock_timeout_s: float = _DEFAULT_WALL_CLOCK_TIMEOUT_S,
-    on_record: "Callable[[dict[str, Any]], None] | None" = None,
-    timer_scheduler: SimTimerScheduler | None = None,
-) -> list[dict[str, Any]]:
-    """Run the simulation loop and return a list of timestamped snapshot records.
+@dataclass(slots=True)
+class SimulationSpec:
+    sim_id: str
+    hass: HomeAssistant
+    model: Any
+    control_mode: str
+    heater_entity_id: str
+    temp_sensor_id: str
+    ext_sensor_id: str
+    climate_entity_id: str
+    scenario: dict[str, Any]
+    on_record: "Callable[[dict[str, Any]], None] | None" = None
+    timer_scheduler: SimTimerScheduler | None = None
 
-    This function must be called after the VT integration is set up and the
-    SmartPI monotonic clock is monkeypatched.
 
-    Args:
-        hass:              The HomeAssistant test instance.
-        model:             Thermal model from ``sim.models.create_model()``.
-        control_mode:      ``"pwm"`` (switch entity) or ``"linear"`` (number entity).
-        heater_entity_id:  The switch or number entity VT writes to.
-        temp_sensor_id:    Room temperature sensor entity ID.
-        ext_sensor_id:     External temperature sensor entity ID.
-        climate_entity_id: The VT climate entity to read state from.
-        scenario:          Full scenario dict; reads ``scenario["simulation"]``.
-        advance_clock:     Called each step with ``dt_s`` to advance the SimClock.
+@dataclass(slots=True)
+class _SimulationRuntime:
+    spec: SimulationSpec
+    sim_cfg: dict[str, Any]
+    pipeline: SensorPipeline
+    ext_profile: ExternalTempProfile
+    occupancy: OccupancyProfile
+    weather: WeatherProfile
+    dt_s: float
+    duration_h: float
+    total_s: float
+    total_steps: int
+    record_every_steps: int
+    schedule: list[tuple[float, float]]
+    read_power: Callable[[], float]
+    prev_power: float = 0.0
+    records: list[dict[str, Any]] = field(default_factory=list)
+    step_contexts: dict[int, dict[str, Any]] = field(default_factory=dict)
+    show_progress: bool = False
+    last_progress_minute: int = -1
 
-    Returns:
-        List of snapshot dicts, one per ``record_every_seconds`` of simulated time.
-    """
-    sim_cfg: dict[str, Any] = scenario.get("simulation", {})
 
-    # Build sensor pipeline and disturbance objects from scenario config.
-    pipeline = SensorPipeline(scenario.get("sensor", {}), model.temperature)
+def _build_runtime(spec: SimulationSpec) -> _SimulationRuntime:
+    sim_cfg: dict[str, Any] = spec.scenario.get("simulation", {})
+    pipeline = SensorPipeline(spec.scenario.get("sensor", {}), spec.model.temperature)
     ext_profile, occupancy, weather = _build_disturbances(
-        scenario.get("disturbances", {}) or {}
+        spec.scenario.get("disturbances", {}) or {}
     )
-    # Initial pre-loop sensor reading (dt_s=0 → lag stage returns initial_temp unchanged).
-    sensor_temp: float = pipeline.step(model.temperature, dt_s=0.0, sim_time_s=0.0)
+    pipeline.step(spec.model.temperature, dt_s=0.0, sim_time_s=0.0)
 
     dt_s = float(sim_cfg.get("step_seconds", 10.0))
     if dt_s <= 0:
@@ -629,102 +642,123 @@ async def run_simulation(
 
     record_every_s = float(sim_cfg.get("record_every_seconds", 60.0))
     record_every_steps = max(1, int(record_every_s / dt_s))
-
-    # Build sorted setpoint schedule: (trigger_elapsed_s, target_temp)
     schedule: list[tuple[float, float]] = sorted(
         (float(item["at_hour"]) * 3600.0, float(item["target_temp"]))
         for item in (sim_cfg.get("schedule") or [])
         if isinstance(item, dict) and "at_hour" in item and "target_temp" in item
     )
-    # -----------------------------------------------------------------------
-    # Initial thermostat state
-    # -----------------------------------------------------------------------
-    initial_hvac_mode = str(sim_cfg.get("initial_hvac_mode", "heat"))
-    await hass.services.async_call(
+
+    if spec.control_mode == "linear":
+        def _read_power() -> float:
+            return read_number_power(spec.hass, spec.heater_entity_id)
+    else:
+        def _read_power() -> float:
+            return read_switch_power(spec.hass, spec.heater_entity_id)
+
+    return _SimulationRuntime(
+        spec=spec,
+        sim_cfg=sim_cfg,
+        pipeline=pipeline,
+        ext_profile=ext_profile,
+        occupancy=occupancy,
+        weather=weather,
+        dt_s=dt_s,
+        duration_h=duration_h,
+        total_s=total_s,
+        total_steps=total_steps,
+        record_every_steps=record_every_steps,
+        schedule=schedule,
+        read_power=_read_power,
+        show_progress=os.getenv("VTSIM_PROGRESS", "").strip() not in ("", "0", "false", "False"),
+    )
+
+
+async def _apply_initial_state(runtime: _SimulationRuntime) -> None:
+    spec = runtime.spec
+    sim_cfg = runtime.sim_cfg
+    await spec.hass.services.async_call(
         "climate",
         "set_hvac_mode",
-        {"entity_id": climate_entity_id, "hvac_mode": initial_hvac_mode},
+        {"entity_id": spec.climate_entity_id, "hvac_mode": str(sim_cfg.get("initial_hvac_mode", "heat"))},
         blocking=True,
     )
 
     initial_preset = sim_cfg.get("initial_preset_mode")
     if initial_preset is not None:
-        await hass.services.async_call(
+        await spec.hass.services.async_call(
             "climate",
             "set_preset_mode",
-            {"entity_id": climate_entity_id, "preset_mode": str(initial_preset)},
+            {"entity_id": spec.climate_entity_id, "preset_mode": str(initial_preset)},
             blocking=True,
         )
 
     initial_temperature = sim_cfg.get("initial_temperature")
     if initial_temperature is not None:
-        await hass.services.async_call(
+        await spec.hass.services.async_call(
             "climate",
             "set_temperature",
-            {"entity_id": climate_entity_id, "temperature": float(initial_temperature)},
+            {"entity_id": spec.climate_entity_id, "temperature": float(initial_temperature)},
             blocking=True,
         )
 
-    # VT may create long-lived background tasks; waiting for them can block forever.
-    await asyncio.wait_for(hass.async_block_till_done(), timeout=60.0)
+async def run_simulations(
+    simulations: list[SimulationSpec],
+    *,
+    advance_clock: Callable[[float], None],
+    wall_clock_timeout_s: float = _DEFAULT_WALL_CLOCK_TIMEOUT_S,
+) -> dict[str, tuple[list[dict[str, Any]], datetime]]:
+    """Run one or more simulations against a single master timeline."""
+    runtimes = {spec.sim_id: _build_runtime(spec) for spec in simulations}
+    if not runtimes:
+        return {}
 
-    # -----------------------------------------------------------------------
-    # Simulation clock
-    # -----------------------------------------------------------------------
-    # Anchor at HA's notion of "now" (may be patched by the harness).
+    for runtime in runtimes.values():
+        await _apply_initial_state(runtime)
+
+    unique_hass = {id(runtime.spec.hass): runtime.spec.hass for runtime in runtimes.values()}
+    for hass in unique_hass.values():
+        await asyncio.wait_for(hass.async_block_till_done(), timeout=60.0)
+
     sim_start = dt_util.utcnow().astimezone(timezone.utc).replace(second=0, microsecond=0)
+    for hass in unique_hass.values():
+        async_fire_time_changed(hass, sim_start)
+        await asyncio.wait_for(hass.async_block_till_done(), timeout=60.0)
 
-    # Fire an initial tick to let VT process startup state before the loop.
-    async_fire_time_changed(hass, sim_start)
-    await asyncio.wait_for(hass.async_block_till_done(), timeout=60.0)
+    for runtime in runtimes.values():
+        runtime.prev_power = runtime.read_power()
 
-    # -----------------------------------------------------------------------
-    # Power reader (selected once, called each step)
-    # -----------------------------------------------------------------------
-    if control_mode == "linear":
-        def _read_power() -> float:
-            return read_number_power(hass, heater_entity_id)
-    else:
-        def _read_power() -> float:
-            return read_switch_power(hass, heater_entity_id)
-
-    prev_power: float = _read_power()
-
-    # -----------------------------------------------------------------------
-    # Event-driven loop
-    # -----------------------------------------------------------------------
-    records: list[dict[str, Any]] = []
-    show_progress = os.getenv("VTSIM_PROGRESS", "").strip() not in ("", "0", "false", "False")
-    last_progress_minute: int = -1
     wall_start = _REAL_MONOTONIC()
-    _TIMEOUT_CHECK_INTERVAL = 1000  # check wall clock every N steps
+    _TIMEOUT_CHECK_INTERVAL = 1000
     event_queue = _EventQueue()
     sim_time_s = 0.0
-    step_contexts: dict[int, dict[str, Any]] = {}
-    if timer_scheduler is not None:
-        timer_scheduler.attach(event_queue, sim_start=sim_start)
 
-    for at_s, target_temp in schedule:
-        if 0.0 <= at_s <= total_s:
+    for sim_id, runtime in runtimes.items():
+        if runtime.spec.timer_scheduler is not None:
+            runtime.spec.timer_scheduler.attach(event_queue, sim_start=sim_start, sim_id=sim_id)
+        for at_s, target_temp in runtime.schedule:
+            if 0.0 <= at_s <= runtime.total_s:
+                event_queue.push(
+                    time_s=at_s,
+                    priority=_EVENT_PRIORITY_SETPOINT,
+                    sim_id=sim_id,
+                    event_type="setpoint_change",
+                    payload={"target_temp": target_temp},
+                )
+        for step in range(runtime.total_steps):
             event_queue.push(
-                time_s=at_s,
-                priority=_EVENT_PRIORITY_SETPOINT,
-                event_type="setpoint_change",
-                payload={"target_temp": target_temp},
+                time_s=step * runtime.dt_s,
+                priority=_EVENT_PRIORITY_PHYSICS,
+                sim_id=sim_id,
+                event_type="physics_step",
+                payload={"step": step},
             )
-
-    for step in range(total_steps):
-        event_queue.push(
-            time_s=step * dt_s,
-            priority=_EVENT_PRIORITY_PHYSICS,
-            event_type="physics_step",
-            payload={"step": step},
-        )
 
     while event_queue:
         event = event_queue.pop()
+        runtime = runtimes[event.sim_id]
+        spec = runtime.spec
 
-        if event.time_s > total_s + _MONOTONIC_RESOLUTION:
+        if event.time_s > runtime.total_s + _MONOTONIC_RESOLUTION:
             continue
 
         if event.time_s + _MONOTONIC_RESOLUTION < sim_time_s:
@@ -738,13 +772,13 @@ async def run_simulation(
             sim_time_s = event.time_s
 
         if event.event_type == "setpoint_change":
-            await hass.services.async_call(
+            await spec.hass.services.async_call(
                 "climate",
                 "set_temperature",
-                {"entity_id": climate_entity_id, "temperature": event.payload["target_temp"]},
+                {"entity_id": spec.climate_entity_id, "temperature": event.payload["target_temp"]},
                 blocking=True,
             )
-            await asyncio.wait_for(hass.async_block_till_done(), timeout=30.0)
+            await asyncio.wait_for(spec.hass.async_block_till_done(), timeout=30.0)
             continue
 
         if event.event_type == "physics_step":
@@ -754,50 +788,53 @@ async def run_simulation(
                 if elapsed_wall > wall_clock_timeout_s:
                     raise TimeoutError(
                         f"Simulation wall-clock timeout after {elapsed_wall:.0f}s "
-                        f"at simulated step {step}/{total_steps} "
-                        f"({step * dt_s / 3600:.1f}h of {duration_h}h)"
+                        f"at simulated step {step}/{runtime.total_steps} "
+                        f"({step * runtime.dt_s / 3600:.1f}h of {runtime.duration_h}h)"
                     )
 
-            elapsed_s_start = step * dt_s
-            elapsed_s_end = elapsed_s_start + dt_s
+            elapsed_s_start = step * runtime.dt_s
+            elapsed_s_end = elapsed_s_start + runtime.dt_s
             step_end_time = sim_start + timedelta(seconds=elapsed_s_end)
 
-            if ext_profile.enabled:
-                model.set_external_temperature(ext_profile.temperature_at(elapsed_s_start))
-            model.internal_gain_watts = occupancy.gain_at(elapsed_s_start)
-            model.weather_k_multiplier = weather.multiplier
+            if runtime.ext_profile.enabled:
+                spec.model.set_external_temperature(runtime.ext_profile.temperature_at(elapsed_s_start))
+            spec.model.internal_gain_watts = runtime.occupancy.gain_at(elapsed_s_start)
+            spec.model.weather_k_multiplier = runtime.weather.multiplier
 
-            applied_power_this_step = prev_power
-            model.set_power_fraction(applied_power_this_step)
-            model.step(dt_s)
-            sensor_temp = pipeline.step(model.temperature, dt_s, elapsed_s_end)
+            applied_power_this_step = runtime.prev_power
+            spec.model.set_power_fraction(applied_power_this_step)
+            spec.model.step(runtime.dt_s)
+            sensor_temp = runtime.pipeline.step(spec.model.temperature, runtime.dt_s, elapsed_s_end)
 
-            step_contexts[step] = {
+            runtime.step_contexts[step] = {
                 "elapsed_s_end": elapsed_s_end,
                 "step_end_time": step_end_time,
                 "sensor_temperature": sensor_temp,
                 "power_prev_step_applied": applied_power_this_step,
                 "switch_state_before_tick": None,
                 "switch_state_after_tick": None,
-                "should_record": step % record_every_steps == 0,
+                "should_record": step % runtime.record_every_steps == 0,
             }
 
             event_queue.push(
                 time_s=elapsed_s_end,
                 priority=_EVENT_PRIORITY_SENSOR,
+                sim_id=event.sim_id,
                 event_type="sensor_publish",
                 payload={"step": step},
             )
             event_queue.push(
                 time_s=elapsed_s_end,
                 priority=_EVENT_PRIORITY_HA_TIMER,
+                sim_id=event.sim_id,
                 event_type="step_tick",
                 payload={"step": step},
             )
-            if step_contexts[step]["should_record"]:
+            if runtime.step_contexts[step]["should_record"]:
                 event_queue.push(
                     time_s=elapsed_s_end,
                     priority=_EVENT_PRIORITY_SNAPSHOT,
+                    sim_id=event.sim_id,
                     event_type="record_snapshot",
                     payload={"step": step},
                 )
@@ -805,64 +842,102 @@ async def run_simulation(
 
         if event.event_type == "sensor_publish":
             step = int(event.payload["step"])
-            ctx = step_contexts[step]
-            inject_temperature(hass, temp_sensor_id, ctx["sensor_temperature"])
+            ctx = runtime.step_contexts[step]
+            inject_temperature(spec.hass, spec.temp_sensor_id, ctx["sensor_temperature"])
             inject_temperature(
-                hass,
-                ext_sensor_id,
-                model.external_temperature,
+                spec.hass,
+                spec.ext_sensor_id,
+                spec.model.external_temperature,
                 friendly_name="External Temperature",
             )
-            await asyncio.wait_for(hass.async_block_till_done(), timeout=30.0)
+            await asyncio.wait_for(spec.hass.async_block_till_done(), timeout=30.0)
             continue
 
         if event.event_type == "step_tick":
             step = int(event.payload["step"])
-            ctx = step_contexts[step]
-            ctx["switch_state_before_tick"] = _read_power()
-            async_fire_time_changed(hass, ctx["step_end_time"])
-            await asyncio.wait_for(hass.async_block_till_done(), timeout=30.0)
-            ctx["switch_state_after_tick"] = _read_power()
-            prev_power = ctx["switch_state_after_tick"]
+            ctx = runtime.step_contexts[step]
+            ctx["switch_state_before_tick"] = runtime.read_power()
+            async_fire_time_changed(spec.hass, ctx["step_end_time"])
+            await asyncio.wait_for(spec.hass.async_block_till_done(), timeout=30.0)
+            ctx["switch_state_after_tick"] = runtime.read_power()
+            runtime.prev_power = ctx["switch_state_after_tick"]
             if not ctx["should_record"]:
-                step_contexts.pop(step, None)
+                runtime.step_contexts.pop(step, None)
             continue
 
         if event.event_type == "scheduled_callback":
-            if timer_scheduler is None:
-                raise RuntimeError("Scheduled callback event fired without a timer scheduler")
-            timer_scheduler.fire(int(event.payload["timer_id"]))
-            await asyncio.wait_for(hass.async_block_till_done(), timeout=30.0)
+            scheduler = event.payload["scheduler"]
+            scheduler.fire(int(event.payload["timer_id"]))
+            await asyncio.wait_for(spec.hass.async_block_till_done(), timeout=30.0)
             continue
 
         if event.event_type == "record_snapshot":
             step = int(event.payload["step"])
-            ctx = step_contexts.pop(step)
+            ctx = runtime.step_contexts.pop(step)
             snap = _capture_snapshot(
-                hass,
-                climate_entity_id,
-                model,
+                spec.hass,
+                spec.climate_entity_id,
+                spec.model,
                 ctx["elapsed_s_end"],
                 sensor_temperature=ctx["sensor_temperature"],
-                heater_entity_id=heater_entity_id,
+                heater_entity_id=spec.heater_entity_id,
                 power_prev_step_applied=ctx["power_prev_step_applied"],
                 switch_state_before_tick=ctx["switch_state_before_tick"],
                 switch_state_after_tick=ctx["switch_state_after_tick"],
             )
-            snap["switch_state"] = prev_power
-            records.append(snap)
-            if on_record is not None:
-                on_record(snap)
+            snap["switch_state"] = runtime.prev_power
+            snap["sim_id"] = spec.sim_id
+            runtime.records.append(snap)
+            if spec.on_record is not None:
+                spec.on_record(snap)
 
-            if show_progress:
+            if runtime.show_progress:
                 elapsed_minute = int(ctx["elapsed_s_end"] // 60)
-                if elapsed_minute != last_progress_minute:
-                    last_progress_minute = elapsed_minute
-                    _print_progress(step + 1, total_steps, ctx["elapsed_s_end"], snap)
+                if elapsed_minute != runtime.last_progress_minute:
+                    runtime.last_progress_minute = elapsed_minute
+                    _print_progress(step + 1, runtime.total_steps, ctx["elapsed_s_end"], snap)
             continue
 
         raise RuntimeError(f"Unsupported simulation event: {event.event_type}")
 
-    if show_progress:
-        print()  # end the progress line
-    return records, sim_start
+    if any(runtime.show_progress for runtime in runtimes.values()):
+        print()
+    return {sim_id: (runtime.records, sim_start) for sim_id, runtime in runtimes.items()}
+
+
+async def run_simulation(
+    hass: HomeAssistant,
+    *,
+    model: Any,
+    control_mode: str,
+    heater_entity_id: str,
+    temp_sensor_id: str,
+    ext_sensor_id: str,
+    climate_entity_id: str,
+    scenario: dict[str, Any],
+    advance_clock: Callable[[float], None],
+    wall_clock_timeout_s: float = _DEFAULT_WALL_CLOCK_TIMEOUT_S,
+    on_record: "Callable[[dict[str, Any]], None] | None" = None,
+    timer_scheduler: SimTimerScheduler | None = None,
+) -> list[dict[str, Any]]:
+    """Run a single simulation by delegating to the shared multi-sim engine."""
+    results = await run_simulations(
+        [
+            SimulationSpec(
+                sim_id="default",
+                hass=hass,
+                model=model,
+                control_mode=control_mode,
+                heater_entity_id=heater_entity_id,
+                temp_sensor_id=temp_sensor_id,
+                ext_sensor_id=ext_sensor_id,
+                climate_entity_id=climate_entity_id,
+                scenario=scenario,
+                on_record=on_record,
+                timer_scheduler=timer_scheduler,
+            )
+        ],
+        advance_clock=advance_clock,
+        wall_clock_timeout_s=wall_clock_timeout_s,
+    )
+    return results["default"]

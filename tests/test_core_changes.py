@@ -49,7 +49,7 @@ def test_empty_metrics_includes_deadtime_heat_s():
 
 import inspect
 from datetime import datetime, timedelta, timezone
-from sim.engine import SimTimerScheduler, _EventQueue, run_simulation
+from sim.engine import SimTimerScheduler, _EventQueue, run_simulation, run_simulations
 
 
 def test_run_simulation_accepts_on_record_parameter():
@@ -76,6 +76,18 @@ def test_event_queue_orders_by_time_then_priority_then_sequence():
     ]
 
 
+def test_event_queue_carries_sim_id():
+    queue = _EventQueue()
+    queue.push(time_s=1.0, priority=10, sim_id="sim-b", event_type="event-b")
+    queue.push(time_s=1.0, priority=10, sim_id="sim-a", event_type="event-a")
+
+    first = queue.pop()
+    second = queue.pop()
+
+    assert first.sim_id == "sim-b"
+    assert second.sim_id == "sim-a"
+
+
 class _FakeHass:
     def __init__(self) -> None:
         self.loop = asyncio.new_event_loop()
@@ -99,6 +111,18 @@ def test_sim_timer_scheduler_queues_pending_timer_on_attach():
     event = queue.pop()
     assert event.event_type == "scheduled_callback"
     assert event.time_s == 12.0
+
+
+def test_sim_timer_scheduler_attach_sets_event_sim_id():
+    now = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    scheduler = SimTimerScheduler(now_provider=lambda: now)
+    scheduler.schedule(_FakeHass(), 3.0, lambda when: when)
+    queue = _EventQueue()
+
+    scheduler.attach(queue, sim_start=now, sim_id="sim-2")
+
+    event = queue.pop()
+    assert event.sim_id == "sim-2"
 
 
 def test_sim_timer_scheduler_cancel_prevents_callback():
@@ -179,6 +203,12 @@ def test_sim_timer_scheduler_interval_cancel_stops_future_ticks():
     scheduler.fire(int(second.payload["timer_id"]))
 
     assert fired == [now.replace(second=10)]
+
+
+def test_run_simulations_is_available():
+    sig = inspect.signature(run_simulations)
+    assert "simulations" in sig.parameters
+    assert "advance_clock" in sig.parameters
 
 
 from pathlib import Path
