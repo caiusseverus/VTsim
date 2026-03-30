@@ -648,8 +648,14 @@ async def test_vt_scenario(
     import time as _time_mod
     monkeypatch.setattr(_time_mod, "time", clock.time)
 
+    def _sim_async_track_time_interval(hass_obj, action, interval):
+        return timer_scheduler.schedule_interval(hass_obj, action, interval)
+
     def _sim_async_call_later(hass_obj, delay, action):
         return timer_scheduler.schedule(hass_obj, delay, action)
+
+    import homeassistant.helpers.event as ha_event
+    monkeypatch.setattr(ha_event, "async_track_time_interval", _sim_async_track_time_interval)
 
     # cycle_scheduler was added in a later VT version — skip patching on older builds
     try:
@@ -660,6 +666,20 @@ async def test_vt_scenario(
         )
     except ModuleNotFoundError:
         pass
+
+    for module_name in (
+        "custom_components.versatile_thermostat.thermostat_switch",
+        "custom_components.versatile_thermostat.thermostat_valve",
+        "custom_components.versatile_thermostat.thermostat_climate",
+        "custom_components.versatile_thermostat.prop_handler_smartpi",
+        "custom_components.versatile_thermostat.keep_alive",
+        "custom_components.versatile_thermostat.feature_central_boiler_manager",
+    ):
+        try:
+            module = __import__(module_name, fromlist=["async_track_time_interval"])
+            monkeypatch.setattr(module, "async_track_time_interval", _sim_async_track_time_interval)
+        except ModuleNotFoundError:
+            continue
 
     # ------------------------------------------------------------------
     # 5c. Limit VT platform forwarding to what the simulation actually needs.
@@ -717,10 +737,13 @@ async def test_vt_scenario(
         monkeypatch.setattr(time, "time", clock.time)
         monkeypatch.setattr(dt_util, "utcnow", clock.utcnow)
 
+        def _async_track_time_interval_sim(hass_obj, action, interval):
+            return timer_scheduler.schedule_interval(hass_obj, action, interval)
+
         def _async_call_later_sim(hass_obj, delay, action):
             return timer_scheduler.schedule(hass_obj, delay, action)
 
-        import homeassistant.helpers.event as ha_event
+        monkeypatch.setattr(ha_event, "async_track_time_interval", _async_track_time_interval_sim)
         monkeypatch.setattr(ha_event, "async_call_later", _async_call_later_sim)
 
         # cycle_scheduler was added in a later VT version — skip patching on older builds
@@ -729,6 +752,20 @@ async def test_vt_scenario(
             monkeypatch.setattr(vt_cycle, "async_call_later", _async_call_later_sim)
         except ModuleNotFoundError:
             pass
+
+        for module_name in (
+            "custom_components.versatile_thermostat.thermostat_switch",
+            "custom_components.versatile_thermostat.thermostat_valve",
+            "custom_components.versatile_thermostat.thermostat_climate",
+            "custom_components.versatile_thermostat.prop_handler_smartpi",
+            "custom_components.versatile_thermostat.keep_alive",
+            "custom_components.versatile_thermostat.feature_central_boiler_manager",
+        ):
+            try:
+                module = __import__(module_name, fromlist=["async_track_time_interval"])
+                monkeypatch.setattr(module, "async_track_time_interval", _async_track_time_interval_sim)
+            except ModuleNotFoundError:
+                continue
 
         # Set up live CSV streaming for web backend.
         _live_csv_path_str = os.getenv("VTSIM_LIVE_CSV", "")

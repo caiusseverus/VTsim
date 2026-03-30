@@ -133,13 +133,25 @@ class _ScheduledTimer:
     cancelled: bool = False
 
 
+@dataclass(slots=True)
+class _ScheduledInterval:
+    interval_id: int
+    hass: HomeAssistant
+    action: Callable[[datetime], Any]
+    interval: timedelta
+    active: bool = True
+    next_timer_id: int | None = None
+
+
 class SimTimerScheduler:
     """Engine-owned scheduler for patched async_call_later callbacks."""
 
     def __init__(self, *, now_provider: Callable[[], datetime] | None = None) -> None:
         self._now_provider = now_provider or dt_util.utcnow
         self._timers: dict[int, _ScheduledTimer] = {}
+        self._intervals: dict[int, _ScheduledInterval] = {}
         self._next_timer_id = 0
+        self._next_interval_id = 0
         self._event_queue: _EventQueue | None = None
         self._sim_start: datetime | None = None
 
@@ -149,28 +161,50 @@ class SimTimerScheduler:
         delay: float | timedelta,
         action: Callable[[datetime], Any],
     ) -> Callable[[], None]:
-        delay_s = (
-            float(delay.total_seconds())
-            if isinstance(delay, timedelta)
-            else float(delay)
+        delay_s = self._coerce_delay_seconds(delay)
+        timer_id = self._schedule_at(
+            hass,
+            dt_util.as_utc(
+                self._now_provider() + timedelta(seconds=max(0.0, delay_s))
+            ),
+            action,
         )
-        when = dt_util.as_utc(
-            self._now_provider() + timedelta(seconds=max(0.0, delay_s))
-        )
-        timer = _ScheduledTimer(
-            timer_id=self._next_timer_id,
-            when=when,
-            hass=hass,
-            action=action,
-        )
-        self._next_timer_id += 1
-        self._timers[timer.timer_id] = timer
-        self._enqueue(timer)
 
         def _cancel() -> None:
-            stored = self._timers.pop(timer.timer_id, None)
-            if stored is not None:
-                stored.cancelled = True
+            self._cancel_timer(timer_id)
+
+        return _cancel
+
+    def schedule_interval(
+        self,
+        hass: HomeAssistant,
+        action: Callable[[datetime], Any],
+        interval: timedelta,
+    ) -> Callable[[], None]:
+        interval_s = max(0.0, self._coerce_delay_seconds(interval))
+        registration = _ScheduledInterval(
+            interval_id=self._next_interval_id,
+            hass=hass,
+            action=action,
+            interval=timedelta(seconds=interval_s),
+        )
+        self._next_interval_id += 1
+        self._intervals[registration.interval_id] = registration
+        self._schedule_interval_tick(
+            registration,
+            dt_util.as_utc(
+                self._now_provider() + timedelta(seconds=interval_s)
+            ),
+        )
+
+        def _cancel() -> None:
+            stored = self._intervals.pop(registration.interval_id, None)
+            if stored is None:
+                return
+            stored.active = False
+            if stored.next_timer_id is not None:
+                self._cancel_timer(stored.next_timer_id)
+                stored.next_timer_id = None
 
         return _cancel
 
@@ -187,6 +221,57 @@ class SimTimerScheduler:
         result = timer.action(timer.when)
         if asyncio.iscoroutine(result):
             timer.hass.async_create_task(result)
+
+    def _coerce_delay_seconds(self, delay: float | timedelta) -> float:
+        return (
+            float(delay.total_seconds())
+            if isinstance(delay, timedelta)
+            else float(delay)
+        )
+
+    def _schedule_at(
+        self,
+        hass: HomeAssistant,
+        when: datetime,
+        action: Callable[[datetime], Any],
+    ) -> int:
+        timer = _ScheduledTimer(
+            timer_id=self._next_timer_id,
+            when=when,
+            hass=hass,
+            action=action,
+        )
+        self._next_timer_id += 1
+        self._timers[timer.timer_id] = timer
+        self._enqueue(timer)
+        return timer.timer_id
+
+    def _cancel_timer(self, timer_id: int) -> None:
+        stored = self._timers.pop(timer_id, None)
+        if stored is not None:
+            stored.cancelled = True
+
+    def _schedule_interval_tick(
+        self,
+        registration: _ScheduledInterval,
+        when: datetime,
+    ) -> None:
+        if not registration.active:
+            return
+
+        def _run_interval(now: datetime) -> Any:
+            if registration.active:
+                self._schedule_interval_tick(
+                    registration,
+                    dt_util.as_utc(now + registration.interval),
+                )
+            return registration.action(now)
+
+        registration.next_timer_id = self._schedule_at(
+            registration.hass,
+            when,
+            _run_interval,
+        )
 
     def _enqueue(self, timer: _ScheduledTimer) -> None:
         if self._event_queue is None or self._sim_start is None or timer.cancelled:

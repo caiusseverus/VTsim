@@ -48,7 +48,7 @@ def test_empty_metrics_includes_deadtime_heat_s():
 
 
 import inspect
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from sim.engine import SimTimerScheduler, _EventQueue, run_simulation
 
 
@@ -135,6 +135,50 @@ def test_sim_timer_scheduler_creates_task_for_coroutine_callback():
 
     assert len(hass.tasks) == 1
     assert fired == [now.replace(second=1)]
+
+
+def test_sim_timer_scheduler_interval_reschedules_after_fire():
+    now = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    scheduler = SimTimerScheduler(now_provider=lambda: now)
+    queue = _EventQueue()
+    scheduler.attach(queue, sim_start=now)
+    fired: list[datetime] = []
+
+    scheduler.schedule_interval(
+        _FakeHass(),
+        lambda when: fired.append(when),
+        timedelta(seconds=15),
+    )
+
+    first = queue.pop()
+    scheduler.fire(int(first.payload["timer_id"]))
+    second = queue.pop()
+
+    assert fired == [now.replace(second=15)]
+    assert second.event_type == "scheduled_callback"
+    assert second.time_s == 30.0
+
+
+def test_sim_timer_scheduler_interval_cancel_stops_future_ticks():
+    now = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    scheduler = SimTimerScheduler(now_provider=lambda: now)
+    queue = _EventQueue()
+    scheduler.attach(queue, sim_start=now)
+    fired: list[datetime] = []
+
+    cancel = scheduler.schedule_interval(
+        _FakeHass(),
+        lambda when: fired.append(when),
+        timedelta(seconds=10),
+    )
+
+    first = queue.pop()
+    scheduler.fire(int(first.payload["timer_id"]))
+    cancel()
+    second = queue.pop()
+    scheduler.fire(int(second.payload["timer_id"]))
+
+    assert fired == [now.replace(second=10)]
 
 
 from pathlib import Path
