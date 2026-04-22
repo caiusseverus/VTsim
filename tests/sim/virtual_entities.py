@@ -13,7 +13,7 @@ linear / valve
     VT calls number.set_value with a 0–100 percentage.
     Use async_setup_virtual_number() + read_number_power().
 
-Temperature sensors are plain HA state entries — inject them with
+Temperature sensors are plain HA state entries — inject/remove them with
 inject_temperature() before VT setup and after each thermal model step.
 
 Usage pattern
@@ -189,27 +189,35 @@ async def async_setup_virtual_number(
 def inject_temperature(
     hass: HomeAssistant,
     entity_id: str,
-    temp: float,
+    temp: float | None,
     *,
     friendly_name: str | None = None,
 ) -> None:
-    """Write a temperature value into HA state.
+    """Write or remove a temperature sensor value in HA state.
 
-    Does NOT await — the state change event is queued and will be processed
+    Does NOT await — state changes are queued and will be processed
     on the next ``async_block_till_done()`` call (which follows immediately
     after ``async_fire_time_changed`` in the engine loop).
 
     Args:
         hass:          The HomeAssistant instance.
-        entity_id:     Sensor entity ID to update.
-        temp:          Temperature in °C.
+        entity_id:     Sensor entity ID to update/remove (room, external, flow, etc.).
+        temp:          Temperature in °C, or ``None`` to remove the entity.
         friendly_name: Optional override for the friendly_name attribute.
     """
+    if temp is None:
+        hass.states.async_remove(entity_id)
+        return
+
     attrs = dict(_TEMP_ATTRS)
     if friendly_name is not None:
         attrs["friendly_name"] = friendly_name
     hass.states.async_set(entity_id, f"{temp:.4f}", attrs)
 
+
+def remove_temperature_entity(hass: HomeAssistant, entity_id: str) -> None:
+    """Remove a temperature sensor entity from HA state by entity_id."""
+    inject_temperature(hass, entity_id, None)
 
 # ---------------------------------------------------------------------------
 # Power / state readers

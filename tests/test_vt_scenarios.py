@@ -51,6 +51,7 @@ from sim.virtual_entities import (
     async_setup_virtual_number,
     async_setup_virtual_switch,
     inject_temperature,
+    remove_temperature_entity,
 )
 from custom_components.versatile_thermostat.vtherm_api import VersatileThermostatAPI
 
@@ -867,6 +868,8 @@ async def test_vt_scenario(
 
     finally:
         await hass.config_entries.async_unload(entry.entry_id)
+        remove_temperature_entity(hass, _TEMP_SENSOR)
+        remove_temperature_entity(hass, _EXT_SENSOR)
         await asyncio.wait_for(hass.async_block_till_done(), timeout=30.0)
         # Clear VT API singleton so the next test starts clean.
         VersatileThermostatAPI._hass = None
